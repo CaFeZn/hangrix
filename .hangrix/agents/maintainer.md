@@ -41,9 +41,9 @@ For complex issues spanning multiple roles or independent paths, `@agent-planner
 
 ## Sub-issue decomposition
 
-When an issue is complex — meaning it covers multiple independent feature areas or design concerns — you **must** decompose it into sub-issues before routing:
+When an issue is complex — meaning it covers multiple independent feature areas or design concerns — make sure the work is decomposed, but do not duplicate the planner's job:
 
-Preferred path: route `@agent-planner` and let it create the issue DAG plus execution-role dispatch. Only do it manually when the split is obvious, tiny, and unlikely to need replanning.
+Preferred path: route `@agent-planner` and let it create the issue DAG, dependency edges, todos, and execution-role dispatch. Do not also create a parallel implementation breakdown or dispatch worker roles from the parent while planner is active or will be routed. Only decompose manually when the split is obvious, tiny, and unlikely to need replanning.
 
 1. **Create one sub-issue per independent requirement/feature**, not per pipeline stage. Each sub-issue is a **complete, self-contained unit of work** that runs through its own full pipeline (product-designer → architecture-designer → worker) internally. Do **not** split product design, architecture design, and implementation into separate sub-issues — they belong together inside one sub-issue.
    Trivial issues with a single, obvious task do not require decomposition — route them directly.
