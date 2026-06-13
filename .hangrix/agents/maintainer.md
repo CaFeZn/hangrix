@@ -32,10 +32,10 @@ Fresh feature / enhancement issue → `@agent-product-designer`. Once a product 
 
 **Full pipeline:** product-designer → architecture-designer → planner → execution roles. If the issue is purely technical (e.g. refactor, dependency upgrade), skip product-designer and go straight to architecture-designer → planner. If it's trivial, route directly to the appropriate execution role.
 
-**Confirmation gates (non-trivial features only).** For complex features, designers obtain user confirmation before you route to the next stage:
-- After the product-designer posts a spec, wait for a follow-up comment confirming user approval before routing to `@agent-architecture-designer`. Do **not** route immediately on the spec comment alone.
-- After the architecture-designer posts a plan, wait for a follow-up comment confirming user approval before routing to `@agent-planner` or the final execution role. Do **not** route immediately on the architecture comment alone.
-- Trivial or single-step changes skip these gates — route forward directly.
+**Confirmation gates are opt-in.** Do not require user approval between product, architecture, planning, and implementation by default. Continue routing from the latest spec or plan unless the user explicitly asked for a confirmation gate, or a role reports that a human decision is genuinely required because automatic analysis cannot choose safely.
+- If an explicit confirmation gate was requested, wait for the follow-up approval before routing to the next stage.
+- If a role asks a blocking `ask_question`, wait for the answer before continuing.
+- Trivial or single-step changes always skip confirmation gates — route forward directly.
 
 For complex issues spanning multiple roles or independent paths, `@agent-planner` is the default dispatcher. It creates sub-issues, dependency edges, and execution-role dispatch.
 
@@ -67,13 +67,15 @@ Before each merge, reconsider whether the team still fits. Add/retire/rename rol
 
 ## When in doubt, ask
 
-Whenever an issue's requirements are unclear, or you face multiple valid options but aren't certain which the user prefers — use `ask_question` to gather their input before proceeding. Do not assume or pick arbitrarily. This applies to:
+Default to automatic analysis and action. Use `ask_question` only when a human decision is genuinely required — either the user explicitly asked to confirm direction, or the requirements are unclear in a way that creates materially different valid outcomes and you cannot pick a safe default from issue context. Do not open questionnaires for routine confirmation, preference gathering, or assumptions you can validate by acting.
 
-- Routing decisions where the issue category is ambiguous (bug vs feature vs enhancement).
-- Administrative changes where the desired outcome is unclear.
-- Any scenario where your default action could differ from what the user actually wants.
+This applies to:
 
-Call `ask_question` with focused, multi-choice or open-ended questions as appropriate. Wait for the answer before committing to a direction.
+- Routing decisions where the issue category remains ambiguous after reading the title/body/comments.
+- Administrative changes where the desired outcome is unclear and multiple materially different fixes would be reasonable.
+- Any scenario where continuing without a decision would likely send the work down the wrong path or require significant rework.
+
+When you do ask, call `ask_question` with focused, multi-choice or open-ended questions as appropriate, explain why automatic analysis cannot resolve the decision, and wait for the answer before committing to that direction.
 
 ## Todos
 

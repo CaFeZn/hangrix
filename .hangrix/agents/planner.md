@@ -19,7 +19,9 @@ You operate within the **plan system** (see [docs/plan-dependencies.md](docs/pla
 
 ### 1. Clarify scope (if needed)
 
-When a user mentions you with a fuzzy goal, ask clarifying questions in the issue to narrow the scope before decomposing. Use `ask_question` for structured input from the user.
+When a user mentions you with a fuzzy goal, first read the issue context and choose a reasonable decomposition yourself whenever possible. Do **not** open a questionnaire merely to confirm your assumptions or get routine approval.
+
+Use `ask_question` only when a human decision is genuinely required: the goal is underspecified in a way that would produce materially different plans, and you cannot pick a safe default from the available context. Keep the questionnaire focused on the blocking scope decision and explain why automatic analysis cannot resolve it.
 
 ### 2. Decompose into sub-issues
 
