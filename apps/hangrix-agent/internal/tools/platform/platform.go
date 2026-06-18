@@ -1055,6 +1055,17 @@ func All(client *Client, async local.AsyncLifecycle, readOnly bool) []local.Tool
 				"summary":      stringProp("Optional project-level summary for why this issue matters."),
 			}, []string{"project_id", "repo_id", "issue_number"}),
 		},
+		{name: "project_issue_create", description: "Create a new issue in another repository that is already linked to the project, and automatically link it back to the project dashboard. Use when planner decides work belongs in an existing linked repo. The current repo must already be linked to the project.",
+			kind: "post", path: "/projects/{project_id}/issues", pathParams: []string{"project_id"}, write: true,
+			schema: objectSchema(map[string]any{
+				"project_id": intProp("The project ID."),
+				"repo_id":    intProp("The linked target repo ID that should own the new issue."),
+				"title":      stringProp("Issue title for the target repo."),
+				"body":       stringProp("Optional issue body (markdown)."),
+				"kind":       stringProp("Project link kind, e.g. implementation, planning, review, integration. Defaults to implementation."),
+				"summary":    stringProp("Optional project-level summary for why this issue matters. Defaults to the title."),
+			}, []string{"project_id", "repo_id", "title"}),
+		},
 		{name: "project_repo_proposal_create", description: "Propose a new repository for a project when planner decides a requirement should become a separate module. This does not create the repo; it records a reviewable provisioning proposal.",
 			kind: "post", path: "/projects/{project_id}/repo-proposals", pathParams: []string{"project_id"}, write: true,
 			schema: objectSchema(map[string]any{

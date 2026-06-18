@@ -53,13 +53,12 @@ func (s *Storage) ResolvePath(ownerUsername, repoName string) (string, error) {
 	return filepath.Clean(filepath.Join(s.reposPath, ownerUsername, repoName+".git")), nil
 }
 
-// InitOnDisk creates the bare repository for repo and, if seedReadme is
-// true, writes one initial commit containing only README.md (rendered
-// from the repo's name + description). The repo is otherwise empty —
-// the user or their code agent initialises .hangrix/* afterwards.
+// InitOnDisk creates the bare repository for repo and, when initialFiles is
+// non-empty, writes one initial commit containing every provided file. Nested
+// paths such as `.hangrix/agents.yml` are supported.
 //
 // Author identity is recorded on the seed commit only.
-func (s *Storage) InitOnDisk(repo *domain.Repo, ownerUsername string, seedReadme bool, authorName, authorEmail string) error {
+func (s *Storage) InitOnDisk(repo *domain.Repo, ownerUsername string, initialFiles map[string][]byte, authorName, authorEmail string) error {
 	path, err := s.ResolvePath(ownerUsername, repo.Name)
 	if err != nil {
 		return err
@@ -67,15 +66,8 @@ func (s *Storage) InitOnDisk(repo *domain.Repo, ownerUsername string, seedReadme
 	if err := s.git.Init(path, repo.DefaultBranch); err != nil {
 		return err
 	}
-	if seedReadme {
-		description := repo.Description
-		if description == "" {
-			description = "This repository was created by Hangrix."
-		}
-		files := map[string][]byte{
-			"README.md": []byte(fmt.Sprintf("# %s\n\n%s\n", repo.Name, description)),
-		}
-		if err := s.git.SeedInitialCommit(path, repo.DefaultBranch, files, authorName, authorEmail); err != nil {
+	if len(initialFiles) > 0 {
+		if err := s.git.SeedInitialCommit(path, repo.DefaultBranch, initialFiles, authorName, authorEmail); err != nil {
 			return err
 		}
 	}

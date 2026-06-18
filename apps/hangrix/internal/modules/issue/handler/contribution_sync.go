@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hangrix/hangrix/pkg/actor"
 
@@ -17,6 +18,8 @@ import (
 	repodomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/domain"
 	workflowdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/workflow/domain"
 )
+
+const contributionFanoutTimeout = 15 * time.Second
 
 // contributionRefRe matches a per-issue contribution namespace ref:
 //
@@ -127,9 +130,14 @@ func (h *Handler) SyncContribution(ctx context.Context, repo *repodomain.Repo, f
 	// reviewer and the maintainer fallback being the author).
 	h.recomputeContributionStatus(ctx, repo.ID, c)
 
-	// Dispatch contribution.push workflows. Best-effort — a workflow
-	// dispatch failure must never block the contribution upsert.
-	h.dispatchContributionPush(ctx, repo, iss, c, headSHA, changedPaths)
+	// Dispatch contribution.push workflows and wake reviewers with fresh,
+	// detached budgets. The expensive diff/upsert path above can consume most
+	// of the PostReceive observer's time slice; if we reuse that nearly-expired
+	// ctx here, the reviewer fanout silently dies right after the branch is
+	// recognised.
+	workflowCtx, workflowCancel := context.WithTimeout(context.Background(), contributionFanoutTimeout)
+	h.dispatchContributionPush(workflowCtx, repo, iss, c, headSHA, changedPaths)
+	workflowCancel()
 
 	// Timeline event.
 	evtPayload, _ := json.Marshal(domain.ContributionEventPayload{
@@ -145,7 +153,9 @@ func (h *Handler) SyncContribution(ctx context.Context, repo *repodomain.Repo, f
 	// subscribes to commit.pushed); the changed paths come from the real diff
 	// so per-role paths / paths_ignore filters are accurate. CauseID is the
 	// contribution head so re-deliveries of the same push dedupe.
-	h.fireContributionPushed(ctx, repo, iss, c, headSHA, changedPaths)
+	reviewCtx, reviewCancel := context.WithTimeout(context.Background(), contributionFanoutTimeout)
+	h.fireContributionPushed(reviewCtx, repo, iss, c, headSHA, changedPaths)
+	reviewCancel()
 
 	return &repodomain.PostReceiveContrib{
 		ContributionID: c.ID,

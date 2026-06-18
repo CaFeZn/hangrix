@@ -30,13 +30,15 @@ func Module() *ioc.Module {
 	svc.ToInterface(new(domain.WorkflowTokenValidator))
 	svc.ToInterface(new(domain.CheckReader))
 	svc.ToInterface(new(domain.PushEventDispatcher))
+	m.Provide(service.NewPendingAgentRunSweeper).ToInterface(new(server.BackgroundJob))
+	m.Provide(service.NewRunningAgentRunSweeper).ToInterface(new(server.BackgroundJob))
+	m.Provide(service.NewAgentRunReconciler).ToInterface(new(server.BackgroundJob))
 
 	// PushObserver: triggers repo.push_tag workflows on git tag push.
 	m.Provide(handler.NewPushObserver).ToInterface(new(repodomain.PushObserver))
 
 	// Handler: HTTP routes
 	m.Provide(handler.NewHandler).ToInterface(new(server.RouteProvider))
-
 	// observerWirer registers every container-bound RunStatusObserver
 	// with the Service at server-startup time. Late binding via
 	// server.OnReady is the standard pattern in this codebase for

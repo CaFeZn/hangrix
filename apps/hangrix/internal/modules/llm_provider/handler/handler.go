@@ -304,6 +304,7 @@ func (h *Handler) patchProvider(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.resetProviderMembers(r.Context(), out.ID)
 	httpx.WriteJSON(w, http.StatusOK, h.toPublicProvider(out))
 }
 
@@ -333,7 +334,31 @@ func (h *Handler) setProviderDisabled(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if !req.Disabled {
+		h.resetProviderMembers(r.Context(), out.ID)
+	}
 	httpx.WriteJSON(w, http.StatusOK, h.toPublicProvider(out))
+}
+
+func (h *Handler) resetProviderMembers(ctx context.Context, providerID int64) {
+	if h.groupRepo == nil || providerID <= 0 {
+		return
+	}
+	members, err := h.groupRepo.ListMembersByProviderID(ctx, providerID)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	for _, m := range members {
+		zero := int32(0)
+		patch := domain.HealthPatch{
+			AutoDisabledUntil: nil,
+			BackoffStep:       &zero,
+			LastSuccessAt:     &now,
+			LastCheckedAt:     &now,
+		}
+		_ = h.groupRepo.UpdateMemberHealth(ctx, m.ID, patch)
+	}
 }
 
 func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request) {

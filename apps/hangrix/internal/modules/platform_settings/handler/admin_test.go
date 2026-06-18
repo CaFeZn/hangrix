@@ -39,6 +39,22 @@ func (s *stubStore) GetDuration(_ context.Context, key string) (time.Duration, e
 	return time.ParseDuration(v.Value)
 }
 
+func (s *stubStore) GetBool(_ context.Context, key string) (bool, error) {
+	v, ok := s.data[key]
+	if !ok {
+		return false, nil
+	}
+	return domain.ParseBoolValue(v.Value)
+}
+
+func (s *stubStore) GetInt(_ context.Context, key string) (int, error) {
+	v, ok := s.data[key]
+	if !ok {
+		return 0, nil
+	}
+	return domain.ParseIntValue(v.Value)
+}
+
 func (s *stubStore) Set(_ context.Context, key, value, description string) error {
 	existing, ok := s.data[key]
 	if !ok {
@@ -335,6 +351,42 @@ func TestPatchKey_registeredKeyDurationValidation(t *testing.T) {
 			t.Fatalf("status = %d, want 400", resp.StatusCode)
 		}
 	})
+}
+
+func TestPatchKey_registeredKeyBoolValidation(t *testing.T) {
+	h := newTestHandler(newStubStore(), []domain.Definition{
+		{Key: "flag", Default: "false", Description: "flag", Type: domain.ValueTypeBool},
+	})
+
+	req := httptest.NewRequest("PATCH", "/api/admin/platform-settings/flag",
+		bytes.NewReader([]byte(`{"value":"not-bool"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestPatchKey_registeredKeyIntValidation(t *testing.T) {
+	h := newTestHandler(newStubStore(), []domain.Definition{
+		{Key: "limit", Default: "64", Description: "limit", Type: domain.ValueTypeInt},
+	})
+
+	req := httptest.NewRequest("PATCH", "/api/admin/platform-settings/limit",
+		bytes.NewReader([]byte(`{"value":"0"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	newRouter(h).ServeHTTP(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
 }
 
 func TestPatch_bulk(t *testing.T) {

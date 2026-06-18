@@ -198,6 +198,21 @@ JOIN llm_providers p ON p.id = m.provider_id
 WHERE m.group_id = sqlc.arg('group_id')
 ORDER BY m.priority ASC;
 
+-- name: ListMembersByProviderID :many
+SELECT
+    m.id, m.group_id, m.provider_id,
+    p.name AS provider_name,
+    m.model, m.priority,
+    m.manual_disabled, m.auto_disabled_until, m.backoff_step,
+    m.last_failure_at, m.last_failure_msg,
+    m.last_success_at, m.last_checked_at,
+    p.disabled AS provider_disabled,
+    m.created_at, m.updated_at
+FROM llm_model_group_members m
+JOIN llm_providers p ON p.id = m.provider_id
+WHERE m.provider_id = sqlc.arg('provider_id')
+ORDER BY m.group_id ASC, m.priority ASC;
+
 -- name: GetMemberByID :one
 SELECT
     m.id, m.group_id, m.provider_id,

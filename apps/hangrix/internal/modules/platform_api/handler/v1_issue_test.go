@@ -145,6 +145,9 @@ func (s *stubAgentAPI) LinkProjectRepo(ctx context.Context, p *apidomain.Actor, 
 func (s *stubAgentAPI) LinkProjectIssue(ctx context.Context, p *apidomain.Actor, projectID, repoID, issueNumber int64, kind, summary string) (any, error) {
 	panic("unexpected")
 }
+func (s *stubAgentAPI) CreateProjectIssue(ctx context.Context, p *apidomain.Actor, projectID, repoID int64, title, body, kind, summary string) (any, error) {
+	panic("unexpected")
+}
 func (s *stubAgentAPI) CreateProjectRepoProposal(ctx context.Context, p *apidomain.Actor, projectID int64, ownerName, repoName, description, reason, moduleBoundary string) (any, error) {
 	panic("unexpected")
 }

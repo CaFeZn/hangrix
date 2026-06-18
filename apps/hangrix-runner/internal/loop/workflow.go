@@ -174,7 +174,13 @@ func (d *WorkflowJobDriver) Run(ctx context.Context, job *client.WorkflowJob) er
 	// 6b. Execute phases with real-time log forwarding.
 	var containerID string
 	for _, pd := range phases {
-		phaseTimeout := 30 * time.Minute // image_pull / image_build default
+		phaseTimeout := 30 * time.Minute // image_pull default
+		if pd.kind == "image_build" {
+			// Host-repo agent images can be heavy (toolchains, browsers,
+			// embedded databases). 30m is too aggressive and leaves the
+			// session stuck before maintainer/planner ever run.
+			phaseTimeout = 2 * time.Hour
+		}
 		if pd.kind == "container_start" {
 			phaseTimeout = 2 * time.Minute
 		}
@@ -684,6 +690,10 @@ func orchestratorVolumes(vols []client.Volume, repoID int64, agentBinDir string)
 	for i, v := range vols {
 		if v.Name == reservedAgentBinVolume && agentBinDir != "" {
 			out[i] = orchestrator.Volume{Name: v.Name, Mount: v.Mount, HostPath: agentBinDir}
+			continue
+		}
+		if filepath.IsAbs(v.Name) {
+			out[i] = orchestrator.Volume{Name: v.Name, Mount: v.Mount, HostPath: v.Name}
 			continue
 		}
 		name := v.Name

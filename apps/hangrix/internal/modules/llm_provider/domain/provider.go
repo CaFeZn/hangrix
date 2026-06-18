@@ -41,6 +41,10 @@ const (
 	// ProviderTypeOpenAICompat is OpenAI Response API forwarded as-is to a
 	// caller-specified base_url (OpenRouter / vLLM / Together / Groq / ...).
 	ProviderTypeOpenAICompat ProviderType = "openai-compat"
+	// ProviderTypeDeepSeek translates Hangrix's Responses-shaped requests to
+	// DeepSeek's OpenAI-compatible Chat Completions API, with DeepSeek-specific
+	// thinking parameter shaping and defaults.
+	ProviderTypeDeepSeek ProviderType = "deepseek"
 	// ProviderTypeMock is the built-in mock provider. It returns
 	// deterministic, text-only responses without making any external
 	// HTTP calls. Used for local testing and e2e agent-chain smoke
@@ -50,7 +54,7 @@ const (
 
 func (t ProviderType) Valid() bool {
 	switch t {
-	case ProviderTypeOpenAI, ProviderTypeAnthropic, ProviderTypeOpenAICompat, ProviderTypeMock:
+	case ProviderTypeOpenAI, ProviderTypeAnthropic, ProviderTypeOpenAICompat, ProviderTypeDeepSeek, ProviderTypeMock:
 		return true
 	}
 	return false
@@ -60,11 +64,11 @@ func (t ProviderType) Valid() bool {
 // cryptobox-sealed blob); only the proxy ever decrypts it, and only at
 // request-handling time. Handlers never return ApiKey on the wire.
 type Provider struct {
-	ID       int64
-	Name     string // [a-z0-9-]{1,64}; appears in admin URLs but not in proxy routes
-	Type     ProviderType
-	BaseURL  string
-	ApiKey   string // sealed blob; opaque to everyone except cryptobox
+	ID      int64
+	Name    string // [a-z0-9-]{1,64}; appears in admin URLs but not in proxy routes
+	Type    ProviderType
+	BaseURL string
+	ApiKey  string // sealed blob; opaque to everyone except cryptobox
 	// AllowedModels is deprecated and no longer used for routing. Routing is
 	// driven entirely by model/group definitions (see GroupRouter.ResolveModel).
 	// The column is retained for backward compatibility; new code must not read

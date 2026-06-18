@@ -230,6 +230,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Post("/{owner}/{name}/variables", h.createVariable)
 		r.Patch("/{owner}/{name}/variables/{varName}", h.updateVariable)
 		r.Delete("/{owner}/{name}/variables/{varName}", h.deleteVariable)
+		r.Post("/{owner}/{name}/hangrix/bootstrap", h.bootstrapHangrix)
 	})
 
 	r.Route("/api/users/{username}/repos", func(r chi.Router) {
@@ -310,6 +311,13 @@ type createReq struct {
 	Visibility    string `json:"visibility"`
 	DefaultBranch string `json:"default_branch,omitempty"`
 	InitReadme    bool   `json:"init_readme,omitempty"`
+	// InitHangrix defaults to false when omitted. Repositories without an
+	// explicit `.hangrix` use the platform's built-in runtime default until the
+	// user chooses to materialize repo-owned config.
+	InitHangrix *bool `json:"init_hangrix,omitempty"`
+	// HangrixTemplate selects the seeded `.hangrix` starter. Empty uses the
+	// default preset.
+	HangrixTemplate string `json:"hangrix_template,omitempty"`
 	// Owner optionally selects the target owner namespace. Empty means
 	// "the calling user"; a non-empty value must resolve to a user (the
 	// caller themselves) or an org of which the caller is a member.
@@ -345,6 +353,10 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid default_branch")
 		return
 	}
+	initHangrix := false
+	if req.InitHangrix != nil {
+		initHangrix = *req.InitHangrix
+	}
 
 	ctx := r.Context()
 	ownerKind, ownerID, ownerName, ok := h.resolveCreateOwner(w, r, caller, strings.TrimSpace(req.Owner))
@@ -366,7 +378,13 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
 	// caller can retry with the same name; otherwise the metadata row would
 	// orphan a missing bare repo. The seed commit's author identity is still
 	// the calling user regardless of who ends up owning the repo.
-	if err := h.storage.InitOnDisk(repo, ownerName, req.InitReadme, caller.Username, caller.Email); err != nil {
+	initialFiles, err := infra.BuildInitialSeedFiles(repo, req.InitReadme, initHangrix, req.HangrixTemplate)
+	if err != nil {
+		_ = h.store.Delete(ctx, repo.ID)
+		httpx.WriteError(w, http.StatusBadRequest, "invalid hangrix_template")
+		return
+	}
+	if err := h.storage.InitOnDisk(repo, ownerName, initialFiles, caller.Username, caller.Email); err != nil {
 		_ = h.store.Delete(ctx, repo.ID)
 		httpx.WriteError(w, http.StatusInternalServerError, "init repo: "+err.Error())
 		return
@@ -1740,6 +1758,17 @@ type commitFileResp struct {
 	BlobPath string    `json:"blob_path"`
 }
 
+type bootstrapHangrixReq struct {
+	Template      string `json:"template,omitempty"`
+	CommitMessage string `json:"commit_message,omitempty"`
+}
+
+type bootstrapHangrixResp struct {
+	Branch string    `json:"branch"`
+	Commit commitRef `json:"commit"`
+	Files  []string  `json:"files"`
+}
+
 func (h *Handler) commitFile(w http.ResponseWriter, r *http.Request) {
 	repo, ok := h.resolveRepoForWrite(w, r)
 	if !ok {
@@ -1944,6 +1973,89 @@ func callerEmail(u *userdomain.User) string {
 		return u.Email
 	}
 	return u.Username + "@users.noreply.hangrix.local"
+}
+
+func (h *Handler) bootstrapHangrix(w http.ResponseWriter, r *http.Request) {
+	repo, ok := h.resolveRepoForManage(w, r)
+	if !ok {
+		return
+	}
+	path, ok := h.resolveFsPath(w, repo)
+	if !ok {
+		return
+	}
+	caller, _ := authdomain.UserFromRequest(r)
+	if caller == nil {
+		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var req bootstrapHangrixReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if strings.TrimSpace(req.CommitMessage) == "" {
+		req.CommitMessage = "Initialize Hangrix configuration"
+	}
+
+	files, err := infra.BuildInitialSeedFiles(repo, false, true, req.Template)
+	if err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid hangrix template")
+		return
+	}
+
+	author := gitdomain.Signature{
+		Name:  caller.Username,
+		Email: callerEmail(caller),
+	}
+
+	baseSHA, err := h.git.ResolveCommit(path, repo.DefaultBranch)
+	if err != nil && !errors.Is(err, gitdomain.ErrRefNotFound) {
+		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var newSHA string
+	switch {
+	case err == nil && baseSHA != "":
+		newSHA, err = h.git.UpsertFilesAndCommit(path, repo.DefaultBranch, baseSHA, files, req.CommitMessage, author, author)
+		if err != nil {
+			if mapGitErr(w, err) {
+				return
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	default:
+		if err := h.git.SeedInitialCommit(path, repo.DefaultBranch, files, author.Name, author.Email); err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		newSHA, err = h.git.ResolveCommit(path, repo.DefaultBranch)
+		if err != nil || newSHA == "" {
+			if err == nil {
+				err = fmt.Errorf("resolve seeded hangrix commit")
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	h.invalidateCache(r.Context(), repo.ID)
+	httpx.WriteJSON(w, http.StatusCreated, bootstrapHangrixResp{
+		Branch: repo.DefaultBranch,
+		Commit: commitRef{SHA: newSHA, Message: req.CommitMessage},
+		Files:  sortedFileKeys(files),
+	})
+}
+
+func sortedFileKeys(m map[string][]byte) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // plumbingHex returns the Git blob SHA-1 hex string for the given content.

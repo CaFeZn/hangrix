@@ -41,7 +41,11 @@ func (*OpenAI) Respond(ctx context.Context, req *Request) (*Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode openai request: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/responses", bytes.NewReader(body))
+	path := "/v1/responses"
+	if req.FastMode {
+		path = "/fast/v1/responses"
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -220,34 +224,8 @@ func inputItemsToOpenAI(items []InputItem) []openaiInputItem {
 // (message / reasoning / function_call) and surfaces reasoning_tokens
 // when the upstream emits the o-series usage breakdown.
 func parseResponsesAPIResponseBody(raw []byte, statusCode int) (*Response, error) {
-	var wire struct {
-		ID     string `json:"id"`
-		Output []struct {
-			Type    string `json:"type"`
-			Role    string `json:"role"`
-			CallID  string `json:"call_id"`
-			Name    string `json:"name"`
-			Args    string `json:"arguments"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-			Summary []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"summary"`
-			EncryptedContent string `json:"encrypted_content"`
-		} `json:"output"`
-		Usage struct {
-			Input         int `json:"input_tokens"`
-			Output        int `json:"output_tokens"`
-			Total         int `json:"total_tokens"`
-			OutputDetails struct {
-				Reasoning int `json:"reasoning_tokens"`
-			} `json:"output_tokens_details"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(raw, &wire); err != nil {
+	wire, err := decodeResponsesAPIWire(raw)
+	if err != nil {
 		return nil, fmt.Errorf("decode openai response: %w (body=%s)", err, snippet(raw))
 	}
 	out := &Response{ID: wire.ID, Raw: raw, StatusCode: statusCode}
@@ -289,6 +267,119 @@ func parseResponsesAPIResponseBody(raw []byte, statusCode int) (*Response, error
 	out.Text = textBuf.String()
 	out.Reasoning = reasoningBuf.String()
 	return out, nil
+}
+
+type openaiResponsesWire struct {
+	ID     string `json:"id"`
+	Output []struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		CallID  string `json:"call_id"`
+		Name    string `json:"name"`
+		Args    string `json:"arguments"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		Summary []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"summary"`
+		EncryptedContent string `json:"encrypted_content"`
+	} `json:"output"`
+	Usage struct {
+		Input         int `json:"input_tokens"`
+		Output        int `json:"output_tokens"`
+		Total         int `json:"total_tokens"`
+		OutputDetails struct {
+			Reasoning int `json:"reasoning_tokens"`
+		} `json:"output_tokens_details"`
+	} `json:"usage"`
+}
+
+func decodeResponsesAPIWire(raw []byte) (*openaiResponsesWire, error) {
+	var wire openaiResponsesWire
+	if err := json.Unmarshal(raw, &wire); err == nil {
+		return &wire, nil
+	}
+	sseRaw, err := extractResponsesObjectFromSSE(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(sseRaw, &wire); err != nil {
+		return nil, err
+	}
+	return &wire, nil
+}
+
+func extractResponsesObjectFromSSE(raw []byte) ([]byte, error) {
+	norm := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	norm = strings.ReplaceAll(norm, "\r", "\n")
+	type env struct {
+		Type     string          `json:"type"`
+		Response json.RawMessage `json:"response"`
+		Item     json.RawMessage `json:"item"`
+	}
+	var latest json.RawMessage
+	var outputItems []json.RawMessage
+	for _, block := range strings.Split(norm, "\n\n") {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
+		var dataLines []string
+		for _, line := range strings.Split(block, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "data:") {
+				dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			}
+		}
+		if len(dataLines) == 0 {
+			continue
+		}
+		data := strings.Join(dataLines, "\n")
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var e env
+		if err := json.Unmarshal([]byte(data), &e); err != nil {
+			continue
+		}
+		if e.Type == "response.output_item.done" && len(e.Item) > 0 {
+			outputItems = append(outputItems, e.Item)
+		}
+		if len(e.Response) > 0 {
+			latest = e.Response
+			if e.Type == "response.completed" {
+				break
+			}
+		}
+	}
+	if len(latest) == 0 {
+		return nil, fmt.Errorf("no response object found in SSE stream")
+	}
+	if len(outputItems) == 0 {
+		return latest, nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(latest, &obj); err != nil {
+		return latest, nil
+	}
+	if existing, ok := obj["output"].([]any); !ok || len(existing) == 0 {
+		items := make([]any, 0, len(outputItems))
+		for _, rawItem := range outputItems {
+			var item any
+			if err := json.Unmarshal(rawItem, &item); err == nil {
+				items = append(items, item)
+			}
+		}
+		if len(items) > 0 {
+			obj["output"] = items
+			if merged, err := json.Marshal(obj); err == nil {
+				return merged, nil
+			}
+		}
+	}
+	return latest, nil
 }
 
 // snippet caps an upstream body for use in an error message so a

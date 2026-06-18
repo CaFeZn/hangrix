@@ -113,6 +113,7 @@ type GroupRepo interface {
 	// Members
 	ReplaceMembers(ctx context.Context, groupID int64, members []*GroupMember) error
 	ListMembersByGroupID(ctx context.Context, groupID int64) ([]*GroupMember, error)
+	ListMembersByProviderID(ctx context.Context, providerID int64) ([]*GroupMember, error)
 	GetMemberByID(ctx context.Context, id int64) (*GroupMember, error)
 	UpdateMemberHealth(ctx context.Context, id int64, patch HealthPatch) error
 

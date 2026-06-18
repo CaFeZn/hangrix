@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
 
@@ -17,6 +18,7 @@ import (
 	gitdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/git/domain"
 	issuegatedomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/issue_gate/domain"
 	orgdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/org/domain"
+	platformsettings "github.com/hangrix/hangrix/apps/hangrix/internal/modules/platform_settings/domain"
 	repodomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/domain"
 	silencedomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo_silence/domain"
 	runnerdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/runner/domain"
@@ -35,10 +37,16 @@ type AgentRunCreator interface {
 	CreateAgentRun(ctx context.Context, spec workflowsvc.AgentRunSpec) (*workflowdomain.WorkflowRun, []*workflowdomain.WorkflowJobRun, error)
 }
 
+type agentRunInspector interface {
+	ListAgentRunsByRepo(ctx context.Context, repoID int64, status string, offset, limit int32) ([]*workflowdomain.WorkflowRun, int64, error)
+	ListJobRuns(ctx context.Context, workflowRunID int64) ([]*workflowdomain.WorkflowJobRun, error)
+}
+
 // hostConfigPath is the canonical relative path inside a host repo. The
 // agent_session spec pins this — a host yaml lookup never follows a
 // redirect / alternative location.
 const hostConfigPath = ".hangrix/agents.yml"
+const hostSnapshotReadTimeout = 30 * time.Second
 
 // Spawner is the agent_session orchestrator. Composition is deliberately
 // wide — it touches the repo store, the resolver, the bare repo on disk,
@@ -57,6 +65,7 @@ type Spawner struct {
 	gate          issuegatedomain.IssueActivityGate
 	silenceGate   silencedomain.SilenceGate
 	workflow      AgentRunCreator
+	settings      platformsettings.Store
 	box           *cryptobox.Box
 	hostURL       string
 	// plaintextTokens caches the freshly-minted session-token plaintext
@@ -78,6 +87,7 @@ type SpawnerDeps struct {
 	Gate          issuegatedomain.IssueActivityGate
 	SilenceGate   silencedomain.SilenceGate
 	Workflow      AgentRunCreator
+	Settings      platformsettings.Store
 	Config        *config.Config
 }
 
@@ -100,6 +110,7 @@ func NewSpawner(deps *SpawnerDeps) *Spawner {
 		gate:          deps.Gate,
 		silenceGate:   deps.SilenceGate,
 		workflow:      deps.Workflow,
+		settings:      deps.Settings,
 		box:           box,
 		hostURL:       deps.Config.Server.URL,
 	}
@@ -155,31 +166,31 @@ func (s *Spawner) dispatchAgentRun(
 			Name:          hostRepo.Name,
 			DefaultBranch: hostRepo.DefaultBranch,
 		},
-		Container:           &hostCfg.Container,
-		CommitSHA:           repoSHA,
-		SessionID:           sessionID,
-		SessionToken:        sessionToken,
-		RoleKey:             roleKey,
-		IssueNumber:         in.IssueNumber,
-		CauseKind:           string(in.CauseKind),
-		CauseIDStr:          in.CauseID,
-		WorkingBranch:       issueBranchName(in.IssueNumber),
-		BaseBranch:          hostRepo.DefaultBranch,
-		LLMReasoningEffort:  llmEffort(effective),
-		LLMThinking:         llmThinking(effective),
-		LLMModel:            llmModel(effective),
-		McpServersCSV:       strings.Join(role.MCP, ","),
-		RepoOwner:           hostRepo.OwnerName,
-		RepoName:            hostRepo.Name,
-		RepoFullName:        hostRepo.OwnerName + "/" + hostRepo.Name,
-		RepoSHA:             repoSHA,
-		RepoPermission:      role.Permission,
-		PlatformToolsJSON:   platformToolsJSON,
-		GitAuthorName:       identity.Name,
-		GitAuthorEmail:      identity.Email,
-		GitCommitterName:    identity.Name,
-		GitCommitterEmail:   identity.Email,
-		HostContainerEnv:    hostEnv,
+		Container:          &hostCfg.Container,
+		CommitSHA:          repoSHA,
+		SessionID:          sessionID,
+		SessionToken:       sessionToken,
+		RoleKey:            roleKey,
+		IssueNumber:        in.IssueNumber,
+		CauseKind:          string(in.CauseKind),
+		CauseIDStr:         in.CauseID,
+		WorkingBranch:      issueBranchName(in.IssueNumber),
+		BaseBranch:         hostRepo.DefaultBranch,
+		LLMReasoningEffort: llmEffort(effective),
+		LLMThinking:        llmThinking(effective),
+		LLMModel:           llmModel(effective),
+		McpServersCSV:      strings.Join(role.MCP, ","),
+		RepoOwner:          hostRepo.OwnerName,
+		RepoName:           hostRepo.Name,
+		RepoFullName:       hostRepo.OwnerName + "/" + hostRepo.Name,
+		RepoSHA:            repoSHA,
+		RepoPermission:     role.Permission,
+		PlatformToolsJSON:  platformToolsJSON,
+		GitAuthorName:      identity.Name,
+		GitAuthorEmail:     identity.Email,
+		GitCommitterName:   identity.Name,
+		GitCommitterEmail:  identity.Email,
+		HostContainerEnv:   hostEnv,
 		// Role prompt — the Markdown body resolved from
 		// .hangrix/agents/<role>.md (or the inline prompt: field in
 		// agents.yml) by LoadHostConfig. Rides as HANGRIX_ROLE_PROMPT
@@ -193,21 +204,6 @@ func (s *Spawner) dispatchAgentRun(
 	}
 	if _, _, err := s.workflow.CreateAgentRun(ctx, spec); err != nil {
 		return fmt.Errorf("create _agent workflow run: %w", err)
-	}
-	// Move the session out of 'pending' inline. The runner no longer
-	// claims agent sessions (the cutover purged SessionDriver); the
-	// workflow_job is what runs the agent. Without this transition the
-	// row would sit in 'pending' forever, and the agent's POST /idle
-	// (handled by MarkSessionIdle, which requires status IN claimed/
-	// running) would silently fail at the SQL layer. The call is
-	// idempotent on rewake — MarkSessionRunning accepts pending /
-	// claimed / running.
-	if err := s.runner.MarkSessionRunning(ctx, sessionID); err != nil {
-		// Non-fatal: the workflow_run is already on its way to the
-		// runner, and a stuck-pending row will be retried the next
-		// time this session is woken. Log so an operator can see
-		// state-machine drift if it keeps happening.
-		log.Printf("agent_session: mark session %d running: %v", sessionID, err)
 	}
 	return nil
 }
@@ -235,6 +231,39 @@ func llmThinking(c *agentsconfig.LLMConfig) string {
 		return ""
 	}
 	return *c.Thinking
+}
+
+func (s *Spawner) hasLiveAgentRunForSession(ctx context.Context, repoID, sessionID int64) (bool, error) {
+	inspector, ok := s.workflow.(agentRunInspector)
+	if !ok || inspector == nil {
+		return false, nil
+	}
+	for _, status := range []string{
+		string(workflowdomain.RunStatusRunning),
+		string(workflowdomain.RunStatusPending),
+	} {
+		runs, _, err := inspector.ListAgentRunsByRepo(ctx, repoID, status, 0, 200)
+		if err != nil {
+			return false, err
+		}
+		for _, run := range runs {
+			if run == nil {
+				continue
+			}
+			jobs, err := inspector.ListJobRuns(ctx, run.ID)
+			if err != nil {
+				return false, err
+			}
+			if len(jobs) == 0 {
+				continue
+			}
+			id, ok := extractAgentSessionID(jobs[0].StepsJSON)
+			if ok && id == sessionID {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // triggerActorFromInput maps the spawner-side TriggerInput to the actor
@@ -311,7 +340,7 @@ func (s *Spawner) OnTrigger(ctx context.Context, in domain.TriggerInput) ([]doma
 		return nil, fmt.Errorf("spawner: resolve host fs path: %w", err)
 	}
 
-	hostCfg, err := s.loadHostConfig(ctx, hostFs, hostRepo.DefaultBranch)
+	hostCfg, repoSHA, err := s.loadHostSnapshot(ctx, hostFs, hostRepo.DefaultBranch)
 	if err != nil {
 		return nil, err
 	}
@@ -321,10 +350,6 @@ func (s *Spawner) OnTrigger(ctx context.Context, in domain.TriggerInput) ([]doma
 		return nil, nil
 	}
 
-	repoSHA, err := s.git.ResolveCommit(hostFs, hostRepo.DefaultBranch)
-	if err != nil {
-		return nil, fmt.Errorf("spawner: resolve repo_sha: %w", err)
-	}
 	if repoSHA == "" {
 		// Unborn default branch — same outcome as missing host yaml.
 		return nil, nil
@@ -439,6 +464,18 @@ func (s *Spawner) OnTrigger(ctx context.Context, in domain.TriggerInput) ([]doma
 				out = append(out, enq)
 				continue
 			}
+			if running, err := s.hasLiveAgentRunForSession(ctx, in.RepoID, existing.ID); err != nil {
+				s.recordSpawnError(ctx, in, roleKey, err)
+				continue
+			} else if running {
+				enq, err := s.enqueueOntoLive(ctx, in, existing)
+				if err != nil {
+					s.recordSpawnError(ctx, in, roleKey, err)
+					continue
+				}
+				out = append(out, enq)
+				continue
+			}
 			// Non-live, non-archived: idle / succeeded / cancelled /
 			// failed. Rewake the row so the next runner poll
 			// picks it up, and seed the new turn with the cause.
@@ -477,7 +514,13 @@ func (s *Spawner) OnTrigger(ctx context.Context, in domain.TriggerInput) ([]doma
 // Parse failures bubble up wrapped in ErrHostConfigInvalid so callers can
 // distinguish "non-agent host" from "agent host with a broken file".
 func (s *Spawner) LoadHostConfig(ctx context.Context, repoID int64) (*agentsconfig.HostConfig, error) {
-	hostRepo, err := s.repos.GetByID(ctx, repoID)
+	// Missing repo-owned `.hangrix` resolves through agentsconfig's
+	// built-in fallback, so callers usually receive a runnable config
+	// rather than nil.
+	readCtx, cancel := s.hostSnapshotContext(ctx)
+	defer cancel()
+
+	hostRepo, err := s.repos.GetByID(readCtx, repoID)
 	if err != nil {
 		return nil, fmt.Errorf("spawner: host repo lookup: %w", err)
 	}
@@ -488,7 +531,8 @@ func (s *Spawner) LoadHostConfig(ctx context.Context, repoID int64) (*agentsconf
 	if err != nil {
 		return nil, fmt.Errorf("spawner: resolve host fs path: %w", err)
 	}
-	return s.loadHostConfig(ctx, hostFs, hostRepo.DefaultBranch)
+	cfg, _, err := s.loadHostSnapshot(readCtx, hostFs, hostRepo.DefaultBranch)
+	return cfg, err
 }
 
 // rewakeRole flips a terminal or idle session row (idle / succeeded /
@@ -496,23 +540,14 @@ func (s *Spawner) LoadHostConfig(ctx context.Context, repoID int64) (*agentsconf
 // the agent can resume. The same session row is reused — per-issue
 // per-role continuity is the spec's intent.
 //
-// Token policy: the session row identity (HANGRIX_SESSION_TOKEN) is
-// preserved across rewake whenever the DB still has the sealed
-// plaintext. Both MarkSessionIdle and MarkSessionTerminal now leave
-// sealed intact, so the common path reads prefix / hash / sealed off
-// the existing row and passes them through. The cloned .git/config
-// uses an inline credential.helper that reads $HANGRIX_SESSION_TOKEN
-// at request time, so the helper would actually tolerate a rotated
-// token — but reusing the same row's token avoids DB churn and keeps
-// audit trails coherent across an issue's full life.
-//
-// Legacy rows whose sealed was NULL'd by the old terminate path
-// (rows that died before this change rolled out) fall back to a
-// fresh mint: we have no plaintext to recover, so a new identity is
-// the only option. Those rows still work — the new helper picks up
-// the fresh value on next exec — and existing extraHeader-style
-// clones from before the helper landed continue to authenticate
-// because the same token is being re-installed on the row.
+// Token policy: every rewake rotates a fresh HANGRIX_SESSION_TOKEN.
+// That intentionally severs any late traffic from the previous
+// container generation (MarkIdle, AppendMessage, tool calls) so a stale
+// container cannot mutate the newly rewoken session after ResumeSession.
+// The cloned .git/config uses an inline credential.helper that reads
+// HANGRIX_SESSION_TOKEN from env at request time, so a token rotation is
+// picked up automatically by the new container without rewriting the
+// working tree.
 //
 // The history frame is no longer seeded onto the inputs queue here.
 // The runner fetches it from GET /sessions/{sid}/history at every agent
@@ -522,11 +557,11 @@ func (s *Spawner) LoadHostConfig(ctx context.Context, repoID int64) (*agentsconf
 // reuse) — paths where the previous enqueue-on-spawn design could leave
 // a stale cause frame at the head of the queue.
 func (s *Spawner) rewakeRole(ctx context.Context, in domain.TriggerInput, existing *runnerdomain.AgentSession) (domain.SpawnedSession, error) {
-	// Recover (or re-mint) the session token first. Under the workflow
+	// Mint a fresh session token for every rewake. Under the workflow
 	// model the token rides on the workflow_job env, so we need plaintext
 	// before dispatching — the in-container agent reads it from
 	// HANGRIX_SESSION_TOKEN and authenticates against agent_sessions.
-	tok, plaintext, err := s.resumeTokenWithPlaintext(existing)
+	tok, plaintext, err := s.mintFreshResumeToken()
 	if err != nil {
 		return domain.SpawnedSession{}, err
 	}
@@ -548,6 +583,15 @@ func (s *Spawner) rewakeRole(ctx context.Context, in domain.TriggerInput, existi
 		EventName: string(in.Trigger),
 		Payload:   frame,
 	})
+	if existing.RepoID == nil {
+		return domain.SpawnedSession{}, fmt.Errorf("rewake: session %d has no repo_id (admin smoke path?)", existing.ID)
+	}
+	hostRepo, hostCfg, role, repoSHA, err := s.resolveSpawnSnapshot(ctx, *existing.RepoID, existing.RoleKey)
+	if err != nil {
+		return domain.SpawnedSession{}, err
+	}
+	effective := resolveLLM(role, hostCfg)
+	effective = s.applyFirepowerLLM(ctx, existing.RoleKey, effective)
 
 	// Flip the row out of its non-live status (idle / failed / succeeded
 	// / cancelled) back to 'pending' AND install the (possibly fresh)
@@ -569,15 +613,6 @@ func (s *Spawner) rewakeRole(ctx context.Context, in domain.TriggerInput, existi
 	// path spawnRole takes — the rewake reuses the existing session row
 	// but re-resolves the snapshot inputs at the current default-branch
 	// HEAD so a yaml change between triggers takes effect.
-	if existing.RepoID == nil {
-		return domain.SpawnedSession{}, fmt.Errorf("rewake: session %d has no repo_id (admin smoke path?)", existing.ID)
-	}
-	hostRepo, hostCfg, role, repoSHA, err := s.resolveSpawnSnapshot(ctx, *existing.RepoID, existing.RoleKey)
-	if err != nil {
-		_ = s.runner.MarkSessionTerminal(ctx, existing.ID, runnerdomain.SessionStatusFailed, nil, "rewake resolve snapshot failed: "+err.Error())
-		return domain.SpawnedSession{}, err
-	}
-	effective := resolveLLM(role, hostCfg)
 	if err := s.dispatchAgentRun(ctx, hostRepo, hostCfg, role, existing.RoleKey, repoSHA, in, existing.ID, plaintext, effective, role.Prompt); err != nil {
 		_ = s.runner.MarkSessionTerminal(ctx, existing.ID, runnerdomain.SessionStatusFailed, nil, "rewake dispatch failed: "+err.Error())
 		return domain.SpawnedSession{}, fmt.Errorf("dispatch rewake: %w", err)
@@ -591,24 +626,10 @@ func (s *Spawner) rewakeRole(ctx context.Context, in domain.TriggerInput, existi
 	}, nil
 }
 
-// resumeTokenWithPlaintext is resumeToken's mirror that also returns the
-// hgxs_ plaintext the workflow handoff needs. When the existing row's
-// sealed blob is intact, we decrypt it to recover the plaintext (cheap,
-// AES-GCM); when sealed was NULL'd (legacy rows or an older terminate
-// path), we mint a fresh identity and the caller writes it back via
-// ResumeSession.
-func (s *Spawner) resumeTokenWithPlaintext(existing *runnerdomain.AgentSession) (runnerdomain.NewSessionToken, string, error) {
-	if existing.SessionTokenSealed != "" {
-		plaintext, err := s.box.Decrypt(existing.SessionTokenSealed)
-		if err != nil {
-			return runnerdomain.NewSessionToken{}, "", fmt.Errorf("decrypt sealed session token: %w", err)
-		}
-		return runnerdomain.NewSessionToken{
-			Prefix: existing.SessionTokenPrefix,
-			Hash:   existing.SessionTokenHash,
-			Sealed: existing.SessionTokenSealed,
-		}, plaintext, nil
-	}
+// mintFreshResumeToken returns a freshly minted session token for rewake.
+// Rotating the token prevents late callbacks from the previous container
+// generation from authenticating against the newly rewoken session.
+func (s *Spawner) mintFreshResumeToken() (runnerdomain.NewSessionToken, string, error) {
 	plaintext, prefix, hashed, err := service.MintSessionToken()
 	if err != nil {
 		return runnerdomain.NewSessionToken{}, "", fmt.Errorf("mint session token: %w", err)
@@ -637,7 +658,7 @@ func (s *Spawner) resolveSpawnSnapshot(ctx context.Context, repoID int64, roleKe
 	if err != nil {
 		return nil, nil, nil, "", fmt.Errorf("resolve host fs path: %w", err)
 	}
-	hostCfg, err := s.loadHostConfig(ctx, hostFs, hostRepo.DefaultBranch)
+	hostCfg, repoSHA, err := s.loadHostSnapshot(ctx, hostFs, hostRepo.DefaultBranch)
 	if err != nil {
 		return nil, nil, nil, "", err
 	}
@@ -647,10 +668,6 @@ func (s *Spawner) resolveSpawnSnapshot(ctx context.Context, repoID int64, roleKe
 	role, ok := hostCfg.Roles[roleKey]
 	if !ok {
 		return nil, nil, nil, "", fmt.Errorf("role %q removed from host yaml between triggers", roleKey)
-	}
-	repoSHA, err := s.git.ResolveCommit(hostFs, hostRepo.DefaultBranch)
-	if err != nil {
-		return nil, nil, nil, "", fmt.Errorf("resolve repo_sha: %w", err)
 	}
 	return hostRepo, hostCfg, role, repoSHA, nil
 }
@@ -741,6 +758,7 @@ func (s *Spawner) spawnRole(
 	// role.LLM (override). Empty model is rejected so the runner
 	// doesn't ship an unparseable env.
 	effective := resolveLLM(role, hostCfg)
+	effective = s.applyFirepowerLLM(ctx, roleKey, effective)
 	model := ""
 	if effective != nil {
 		model = effective.Model
@@ -981,34 +999,56 @@ func (p *hostFileProvider) ListDir(dir string) ([]string, bool) {
 	return p.blob.ListBlobs(p.ctx, p.hostFs, p.ref, dir)
 }
 
-// loadHostConfig reads `.hangrix/agents.yml` (team config + tool rules)
-// plus every `.hangrix/agents/<role>.md` role file from the base-branch
-// tip and assembles them. Returns (nil, nil) when agents.yml is absent
-// (non-agent host); (nil, ErrHostConfigInvalid) on parse/validation
-// failure so callers can log and skip rather than re-derive the error.
-func (s *Spawner) loadHostConfig(ctx context.Context, hostFs, branch string) (*agentsconfig.HostConfig, error) {
-	fp := &hostFileProvider{ctx: ctx, blob: s.blob, hostFs: hostFs, ref: branch}
+func (s *Spawner) hostSnapshotContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), hostSnapshotReadTimeout)
+}
+
+// loadHostSnapshot reads `.hangrix/agents.yml` and role files from a single
+// resolved commit SHA. Reading by branch name can race with a push and produce
+// a mixed snapshot, which then surfaces as spurious "unknown role" errors.
+func (s *Spawner) loadHostSnapshot(ctx context.Context, hostFs, branch string) (*agentsconfig.HostConfig, string, error) {
+	readCtx, cancel := s.hostSnapshotContext(ctx)
+	defer cancel()
+
+	repoSHA, err := s.git.ResolveCommit(hostFs, branch)
+	if err != nil {
+		return nil, "", fmt.Errorf("spawner: resolve host snapshot sha: %w", err)
+	}
+	if repoSHA == "" {
+		return nil, "", nil
+	}
+
+	fp := &hostFileProvider{ctx: readCtx, blob: s.blob, hostFs: hostFs, ref: repoSHA}
 	cfg, err := agentsconfig.LoadHostConfig(fp)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", domain.ErrHostConfigInvalid, err)
+		return nil, "", fmt.Errorf("%w: %v", domain.ErrHostConfigInvalid, err)
 	}
 	if cfg == nil {
-		return nil, nil
+		return nil, repoSHA, nil
 	}
 	// NormalizeHostConfig is currently a no-op; we still call it so
 	// future schema-level defaults can land in one well-known place
 	// without every consumer needing to be re-touched.
 	agentsconfig.NormalizeHostConfig(cfg)
-	return cfg, nil
+	return cfg, repoSHA, nil
 }
 
-// pickRunner returns nil on the default "any-runner" policy. Spec
-// (docs/agent-config.md §"Session 模型") accepts unpinned rows; the
-// next runner that polls /api/runner/tasks claims them. A later
-// milestone can swap in a smarter picker without rewiring the spawner.
 func (s *Spawner) pickRunner(ctx context.Context, hostRepo *repodomain.Repo) (*int64, error) {
-	_ = ctx
-	_ = hostRepo
+	if hostRepo == nil || hostRepo.OwnerKind != repodomain.OwnerKindUser {
+		return nil, nil
+	}
+	visibility := runnerdomain.VisibilityUser
+	rows, err := s.runner.ListRunners(ctx, &hostRepo.OwnerID, &visibility)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	for _, rr := range rows {
+		if rr.Status == runnerdomain.StatusActive && rr.Online(now) {
+			id := rr.ID
+			return &id, nil
+		}
+	}
 	return nil, nil
 }
 
@@ -1225,17 +1265,17 @@ func issueBranchName(n int32) string {
 // audit consumers can tell whether the runner pulled or built.
 func buildRoleSnapshot(role *agentsconfig.Role, host *agentsconfig.HostConfig, addendum, model string, effective *agentsconfig.LLMConfig, resolvedImage string) ([]byte, error) {
 	type rs struct {
-		Triggers            map[string]any `json:"triggers"`
-		Permission          string         `json:"permission"`
-		ToolPatterns        []string       `json:"tool_patterns,omitempty"`
-		ScopePaths          []string       `json:"scope_paths,omitempty"`
-		HostAddendum        string         `json:"host_addendum,omitempty"`
-		Model               string         `json:"model"`
-		LLMMaxOutputTokens  int            `json:"llm_max_output_tokens,omitempty"`
-		LLMReasoningEffort  string         `json:"llm_reasoning_effort,omitempty"`
-		LLMThinking         string         `json:"llm_thinking,omitempty"`
-		McpServers          []string       `json:"mcp_servers,omitempty"`
-		Container           map[string]any `json:"container"`
+		Triggers           map[string]any `json:"triggers"`
+		Permission         string         `json:"permission"`
+		ToolPatterns       []string       `json:"tool_patterns,omitempty"`
+		ScopePaths         []string       `json:"scope_paths,omitempty"`
+		HostAddendum       string         `json:"host_addendum,omitempty"`
+		Model              string         `json:"model"`
+		LLMMaxOutputTokens int            `json:"llm_max_output_tokens,omitempty"`
+		LLMReasoningEffort string         `json:"llm_reasoning_effort,omitempty"`
+		LLMThinking        string         `json:"llm_thinking,omitempty"`
+		McpServers         []string       `json:"mcp_servers,omitempty"`
+		Container          map[string]any `json:"container"`
 	}
 	snap := rs{
 		Triggers:     serializeTriggers(role.Triggers),
@@ -1370,6 +1410,32 @@ func resolveLLM(role *agentsconfig.Role, host *agentsconfig.HostConfig) *agentsc
 		}
 	}
 	return out
+}
+
+func (s *Spawner) applyFirepowerLLM(ctx context.Context, roleKey string, effective *agentsconfig.LLMConfig) *agentsconfig.LLMConfig {
+	if effective == nil || s.settings == nil {
+		return effective
+	}
+	enabled, err := s.settings.GetBool(ctx, platformsettings.SettingFirepowerEnabled)
+	if err != nil || !enabled {
+		return effective
+	}
+	if !firepowerTargetsRole(roleKey) && !strings.Contains(strings.ToLower(effective.Model), "deepseek") {
+		return effective
+	}
+	out := *effective
+	out.Model = platformsettings.FirepowerPreferredModel
+	return &out
+}
+
+func firepowerTargetsRole(roleKey string) bool {
+	roleKey = strings.ToLower(roleKey)
+	for _, needle := range []string{"fast", "worker", "reviewer", "scout"} {
+		if strings.Contains(roleKey, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildCauseFrame is the JSON the runner writes to agent stdin to tell

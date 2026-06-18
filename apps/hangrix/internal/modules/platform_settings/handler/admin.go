@@ -4,6 +4,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -121,11 +122,9 @@ func (h *AdminHandler) patchKey(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "value required")
 		return
 	}
-	// Validate the value can be parsed as a duration when the key is
-	// a registered lifecycle key.
-	if _, ok := h.registry.Lookup(key); ok {
-		if _, err := time.ParseDuration(body.Value); err != nil {
-			httpx.WriteError(w, http.StatusBadRequest, "value must be a valid Go duration (e.g. 1h, 168h)")
+	if def, ok := h.registry.Lookup(key); ok {
+		if err := validateValue(def, body.Value); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
@@ -169,9 +168,9 @@ func (h *AdminHandler) patch(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, http.StatusBadRequest, "each item must have key and value")
 			return
 		}
-		if _, ok := h.registry.Lookup(item.Key); ok {
-			if _, err := time.ParseDuration(item.Value); err != nil {
-				httpx.WriteError(w, http.StatusBadRequest, "value for "+item.Key+" must be a valid Go duration (e.g. 1h, 168h)")
+		if def, ok := h.registry.Lookup(item.Key); ok {
+			if err := validateValue(def, item.Value); err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "value for "+item.Key+" "+err.Error())
 				return
 			}
 		}
@@ -187,6 +186,25 @@ func (h *AdminHandler) patch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func validateValue(def domain.Definition, value string) error {
+	switch def.NormalizedType() {
+	case domain.ValueTypeBool:
+		if _, err := domain.ParseBoolValue(value); err != nil {
+			return errors.New("value must be a boolean (true or false)")
+		}
+	case domain.ValueTypeInt:
+		n, err := domain.ParseIntValue(value)
+		if err != nil || n < 1 {
+			return errors.New("value must be a positive integer")
+		}
+	case domain.ValueTypeDuration:
+		if _, err := time.ParseDuration(value); err != nil {
+			return errors.New("value must be a valid Go duration (e.g. 1h, 168h)")
+		}
+	}
+	return nil
 }
 
 // RouteProvider compliance checked in module.go

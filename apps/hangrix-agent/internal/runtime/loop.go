@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/hangrix/hangrix/apps/hangrix-agent/internal/llm"
@@ -84,6 +85,50 @@ func containsFutureTenseAction(content string) bool {
 		}
 	}
 	return false
+}
+
+func isRetryableLLMCallError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "upstream 400"),
+		strings.Contains(msg, "upstream 401"),
+		strings.Contains(msg, "upstream 403"),
+		strings.Contains(msg, "upstream 404"),
+		strings.Contains(msg, "upstream 422"),
+		strings.Contains(msg, "model is required"),
+		strings.Contains(msg, "build request"):
+		return false
+	case strings.Contains(msg, "llm reasoning timeout"),
+		strings.Contains(msg, "upstream 429"),
+		strings.Contains(msg, "upstream 500"),
+		strings.Contains(msg, "upstream 502"),
+		strings.Contains(msg, "upstream 503"),
+		strings.Contains(msg, "upstream 504"),
+		strings.Contains(msg, "upstream 529"),
+		strings.Contains(msg, "temporarily unavailable"),
+		strings.Contains(msg, "connection refused"),
+		strings.Contains(msg, "timeout"),
+		strings.Contains(msg, "tls"),
+		strings.Contains(msg, "connect:"):
+		return true
+	default:
+		return false
+	}
+}
+
+func isContextLimitLLMCallError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "context_too_large") ||
+		strings.Contains(msg, "context_limit") ||
+		strings.Contains(msg, "context length") ||
+		strings.Contains(msg, "context window") ||
+		strings.Contains(msg, "上下文长度超过")
 }
 
 // Loop owns the message-pump that ties the wire transport, LLM and
@@ -182,6 +227,15 @@ type Loop struct {
 	// (resume, shutdown) are consumed. Set back to false by
 	// control:resume.
 	suspended bool
+
+	// turnActive stays true while the loop is inside one LLM/tool turn.
+	// The transport's keep-alive predicate reads it to suppress the
+	// idle-grace EOF during long-running turns. Without this, a quiet
+	// StreamInputs subscription can hit idleGrace based on the time of
+	// the last inbound server frame (often the initial event), enqueue a
+	// deferred EOF mid-turn, and then kill the wake immediately after a
+	// late sleep/background-task schedule.
+	turnActive atomic.Bool
 }
 
 func NewLoop(
@@ -490,6 +544,9 @@ func (l *Loop) driveOneTurnWithID(
 	pendingItems *[]inboxItem,
 	turnID string,
 ) error {
+	l.turnActive.Store(true)
+	defer l.turnActive.Store(false)
+
 	// atMentionNudged is scoped per-turn so a fresh event can re-arm the
 	// reminder. We fire at most once within a turn to avoid wedging the
 	// loop on a model that keeps echoing `@` in plain text.
@@ -512,6 +569,8 @@ func (l *Loop) driveOneTurnWithID(
 	// turn done" branch silently abandons the task. Reset to 0 on any
 	// non-empty response.
 	emptyResponseRetries := 0
+	transientLLMFailures := 0
+	contextLimitRecoveries := 0
 	for round := 0; round < l.maxToolRounds; round++ {
 		// Drain anything the inbox accumulated since the last round
 		// boundary. Non-blocking — we only consume what's already
@@ -641,16 +700,38 @@ func (l *Loop) driveOneTurnWithID(
 				fmt.Fprintf(os.Stderr, "%s\n", timeoutMsg)
 				return fmt.Errorf("%s", timeoutMsg)
 			}
-			// llm.Client already retries on transport/5xx/429 with
-			// exponential backoff; an error here is the upstream's
-			// last word. Surface it on stdout (visible in the audit
-			// log) AND on stderr (caught by runner's exit-code path)
-			// so the session ends 'failed', not 'succeeded'.
+			if isContextLimitLLMCallError(callErr) && contextLimitRecoveries < 2 {
+				contextLimitRecoveries++
+				maxChars := 24000
+				if contextLimitRecoveries > 1 {
+					maxChars = 8000
+				}
+				kept := cctx.AppendContextLimitSummary(24, maxChars)
+				l.lastInputTokens = 0
+				l.compactNudged = false
+				_ = l.out.Log("warn", fmt.Sprintf("llm: context limit hit; compacted visible history to %d recent messages and retrying (attempt %d/2): %s", kept, contextLimitRecoveries, callErr))
+				continue
+			}
+			if isRetryableLLMCallError(callErr) {
+				transientLLMFailures++
+				delay := time.Duration(1<<min(transientLLMFailures-1, 4)) * 2 * time.Second
+				if delay > 30*time.Second {
+					delay = 30 * time.Second
+				}
+				_ = l.out.Log("warn", fmt.Sprintf("llm: transient failure, retrying in %s: %s", delay, callErr))
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(delay):
+				}
+				continue
+			}
 			_ = l.out.Log("error", fmt.Sprintf("llm: %s", callErr))
 			_ = l.out.Done(turnID)
 			fmt.Fprintf(os.Stderr, "llm call failed after retries: %s\n", callErr)
 			return fmt.Errorf("llm call failed: %w", callErr)
 		}
+		transientLLMFailures = 0
 
 		// Preserve `reasoning` blocks if the upstream emitted any. Some
 		// providers (DeepSeek-Reasoner, OpenAI o-series) reject the next
@@ -842,6 +923,18 @@ func (l *Loop) driveOneTurnWithID(
 	_ = l.out.Log("warn", fmt.Sprintf("max tool rounds (%d) exhausted", l.maxToolRounds))
 	_ = l.out.Done(turnID)
 	return nil
+}
+
+// holdWakeOpen reports whether the transport should suppress the
+// StreamInputs idle-grace EOF. A wake must stay alive not only while
+// local async work is pending, but also while the current LLM/tool turn
+// is still in flight; otherwise a long turn can inherit a stale EOF
+// that was computed from the timestamp of the last inbound server frame.
+func (l *Loop) holdWakeOpen() bool {
+	if l.turnActive.Load() {
+		return true
+	}
+	return l.async != nil && l.async.HasRunningJobs() > 0
 }
 
 // drainPending consumes whatever is already buffered on the inbox

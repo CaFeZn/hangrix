@@ -660,6 +660,19 @@ func (r *PostgresRepo) ListMembersByGroupID(ctx context.Context, groupID int64) 
 	return out, nil
 }
 
+// ListMembersByProviderID returns all group members referencing a provider.
+func (r *PostgresRepo) ListMembersByProviderID(ctx context.Context, providerID int64) ([]*domain.GroupMember, error) {
+	rows, err := r.q.ListMembersByProviderID(ctx, providerID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*domain.GroupMember, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, memberFromListMembersByProviderIDRow(row))
+	}
+	return out, nil
+}
+
 // GetMemberByID returns a single member by its primary key.
 func (r *PostgresRepo) GetMemberByID(ctx context.Context, id int64) (*domain.GroupMember, error) {
 	row, err := r.q.GetMemberByID(ctx, id)
@@ -757,6 +770,34 @@ func memberFromListRow(r llmproviderdb.ListMembersByGroupIDRow) *domain.GroupMem
 }
 
 func memberFromGetRow(r llmproviderdb.GetMemberByIDRow) *domain.GroupMember {
+	m := &domain.GroupMember{
+		ID:               r.ID,
+		GroupID:          r.GroupID,
+		ProviderID:       r.ProviderID,
+		ProviderName:     r.ProviderName,
+		Model:            r.Model,
+		Priority:         r.Priority,
+		ManualDisabled:   r.ManualDisabled,
+		BackoffStep:      r.BackoffStep,
+		LastFailureMsg:   r.LastFailureMsg,
+		ProviderDisabled: r.ProviderDisabled,
+	}
+	if r.AutoDisabledUntil.Valid {
+		m.AutoDisabledUntil = &r.AutoDisabledUntil.Time
+	}
+	if r.LastFailureAt.Valid {
+		m.LastFailureAt = &r.LastFailureAt.Time
+	}
+	if r.LastSuccessAt.Valid {
+		m.LastSuccessAt = &r.LastSuccessAt.Time
+	}
+	if r.LastCheckedAt.Valid {
+		m.LastCheckedAt = &r.LastCheckedAt.Time
+	}
+	return m
+}
+
+func memberFromListMembersByProviderIDRow(r llmproviderdb.ListMembersByProviderIDRow) *domain.GroupMember {
 	m := &domain.GroupMember{
 		ID:               r.ID,
 		GroupID:          r.GroupID,

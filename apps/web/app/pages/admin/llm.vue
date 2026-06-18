@@ -78,11 +78,16 @@ const editOpen = computed({
   set: (v: boolean) => { if (!v) editing.value = null },
 })
 
-const PROVIDER_TYPES: ProviderType[] = ['openai', 'anthropic', 'openai-compat']
+const PROVIDER_TYPES: ProviderType[] = ['deepseek', 'openai', 'anthropic', 'openai-compat']
+const PROVIDER_BASE_URL_DEFAULTS: Partial<Record<ProviderType, string>> = {
+  deepseek: 'https://api.deepseek.com',
+  openai: 'https://api.openai.com',
+  anthropic: 'https://api.anthropic.com',
+}
 
 const createSchema = computed(() => toTypedSchema(z.object({
   name: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
-  type: z.enum(['openai', 'anthropic', 'openai-compat']),
+  type: z.enum(['deepseek', 'openai', 'anthropic', 'openai-compat']),
   base_url: z.string().url(),
   api_key: z.string().min(1),
 })))
@@ -92,11 +97,21 @@ const editSchema = computed(() => toTypedSchema(z.object({
   api_key: z.string().optional(),
 })))
 
-const createInitial = { name: '', type: 'openai-compat' as ProviderType, base_url: '', api_key: '' }
+const createInitial = { name: 'deepseek', type: 'deepseek' as ProviderType, base_url: 'https://api.deepseek.com', api_key: '' }
 const editInitial = computed(() => editing.value ? {
   base_url: editing.value.base_url,
   api_key: '',
 } : { base_url: '', api_key: '' })
+
+function onCreateProviderTypeChange(v: unknown, values: any, setFieldValue: (field: string, value: unknown) => void) {
+  const next = v as ProviderType
+  const knownDefaults = new Set(Object.values(PROVIDER_BASE_URL_DEFAULTS))
+  const currentBaseURL = String(values.base_url ?? '')
+  setFieldValue('type', next)
+  if (!currentBaseURL || knownDefaults.has(currentBaseURL)) {
+    setFieldValue('base_url', PROVIDER_BASE_URL_DEFAULTS[next] ?? '')
+  }
+}
 
 async function loadProviders() {
   providerLoading.value = true
@@ -514,7 +529,7 @@ onMounted(async () => {
                   <FormItem>
                     <FormLabel>{{ t('admin.llm.fields.type') }}</FormLabel>
                     <FormControl>
-                      <Select :model-value="values.type" @update:model-value="(v) => setFieldValue('type', v as ProviderType)">
+                      <Select :model-value="values.type" @update:model-value="(v) => onCreateProviderTypeChange(v, values, setFieldValue)">
                         <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
                           <SelectItem v-for="ty in PROVIDER_TYPES" :key="ty" :value="ty">{{ ty }}</SelectItem>

@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hangrix/hangrix/apps/hangrix/internal/agentsconfig"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/config"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/agent_session/domain"
+	platformsettings "github.com/hangrix/hangrix/apps/hangrix/internal/modules/platform_settings/domain"
 	repodomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/domain"
 	runnerdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/runner/domain"
+	workflowdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/workflow/domain"
 )
 
 // testEncryptionKey is a base64-encoded 32-byte key — same shape the
@@ -101,6 +104,32 @@ type testHarness struct {
 	blob     *stubBlob
 }
 
+type stubPlatformSettings struct {
+	boolValues map[string]bool
+	intValues  map[string]int
+}
+
+func (s *stubPlatformSettings) Get(_ context.Context, _ string) (string, bool, error) { return "", false, nil }
+func (s *stubPlatformSettings) GetDuration(_ context.Context, _ string) (time.Duration, error) {
+	return 0, nil
+}
+func (s *stubPlatformSettings) GetBool(_ context.Context, key string) (bool, error) {
+	if s == nil || s.boolValues == nil {
+		return false, nil
+	}
+	return s.boolValues[key], nil
+}
+func (s *stubPlatformSettings) GetInt(_ context.Context, key string) (int, error) {
+	if s == nil || s.intValues == nil {
+		return 0, nil
+	}
+	return s.intValues[key], nil
+}
+func (s *stubPlatformSettings) Set(context.Context, string, string, string) error { return nil }
+func (s *stubPlatformSettings) List(context.Context) ([]platformsettings.Setting, error) {
+	return nil, nil
+}
+
 func newTestSpawner(t *testing.T, fixture *hostFixture, lockBody []byte) *testHarness {
 	t.Helper()
 	cfg := &config.Config{
@@ -153,7 +182,8 @@ func newTestSpawner(t *testing.T, fixture *hostFixture, lockBody []byte) *testHa
 
 	git := newStubGit()
 	// Host repo base-branch sha + each agent repo's ref→sha resolution.
-	git.add("/fake/alice/myproject.git", "main", "repoSHA00000000000000000000000000000000")
+	hostRepoSHA := "repoSHA00000000000000000000000000000000"
+	git.add("/fake/alice/myproject.git", "main", hostRepoSHA)
 	git.add("/fake/acme/coder.git", "v1.0.0", "coderSHA0000000000000000000000000000000")
 	git.add("/fake/acme/dispatcher.git", "v1.0.0", "dispatcherSHA000000000000000000000000")
 	git.add("/fake/acme/reviewer.git", "v1.0.0", "reviewerSHA00000000000000000000000000")
@@ -165,12 +195,15 @@ func newTestSpawner(t *testing.T, fixture *hostFixture, lockBody []byte) *testHa
 	files := map[string][]byte{}
 	if fixture != nil {
 		files["main:"+agentsconfig.HostConfigPath] = []byte(fixture.yaml)
+		files[hostRepoSHA+":"+agentsconfig.HostConfigPath] = []byte(fixture.yaml)
 		for key, body := range fixture.roles {
 			files["main:"+agentsconfig.AgentsDir+"/"+key+".md"] = []byte(body)
+			files[hostRepoSHA+":"+agentsconfig.AgentsDir+"/"+key+".md"] = []byte(body)
 		}
 	}
 	if lockBody != nil {
 		files["main:.hangrix/agents.lock"] = lockBody
+		files[hostRepoSHA+":.hangrix/agents.lock"] = lockBody
 	}
 	blob := newStubBlob(files)
 
@@ -311,6 +344,42 @@ func TestOnTriggerHappyPath(t *testing.T) {
 	}
 }
 
+func TestOnTriggerFirepowerPrefersGPT55ForFastRole(t *testing.T) {
+	fixture := &hostFixture{
+		yaml: teamYAML,
+		roles: map[string]string{
+			"fast-worker": agentMD("triggers:\n  issue.opened: {}\npermission: write\ntools: [all]", "hi"),
+		},
+	}
+	h := newTestSpawner(t, fixture, nil)
+	h.spawner.settings = &stubPlatformSettings{boolValues: map[string]bool{
+		platformsettings.SettingFirepowerEnabled: true,
+	}}
+
+	got, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
+		Trigger:     agentsconfig.TriggerIssueOpened,
+		CauseKind:   domain.CauseKindIssueOpened,
+		RepoID:      1,
+		IssueNumber: 42,
+	})
+	if err != nil {
+		t.Fatalf("OnTrigger err: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d spawned sessions, want 1", len(got))
+	}
+	if h.runner.sessions[0].Model != platformsettings.FirepowerPreferredModel {
+		t.Fatalf("model = %q, want %q", h.runner.sessions[0].Model, platformsettings.FirepowerPreferredModel)
+	}
+	calls := h.workflow.Calls()
+	if len(calls) != 1 {
+		t.Fatalf("workflow calls = %d, want 1", len(calls))
+	}
+	if calls[0].LLMModel != platformsettings.FirepowerPreferredModel {
+		t.Fatalf("workflow LLMModel = %q, want %q", calls[0].LLMModel, platformsettings.FirepowerPreferredModel)
+	}
+}
+
 // TestOnTriggerFiltersByTrigger asserts the matched-role filter: a host
 // yaml with dispatcher (issue.opened) + reviewer (commit.pushed) fired
 // with issue.opened produces exactly one row, dispatcher only.
@@ -362,10 +431,10 @@ func TestOnTriggerIdempotent(t *testing.T) {
 // TestOnTriggerMissingHostYAMLNoOp asserts that a host with no
 // `.hangrix/agents.yml` produces zero sessions and no error — the
 // common case for non-agent repos.
-func TestOnTriggerMissingHostYAMLNoOp(t *testing.T) {
+func TestOnTriggerMissingHostYAMLUsesFallback(t *testing.T) {
 	h := newTestSpawner(t, hostSingleRole(), nil)
-	// Drop the host yaml from the blob store, simulating a non-agent
-	// repo (push observer never wrote `.hangrix/agents.yml`).
+	// Drop every host-config blob, simulating a repo with no committed
+	// `.hangrix`. The platform fallback should still provide roles.
 	h.blob.files = map[string][]byte{}
 
 	got, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
@@ -376,10 +445,13 @@ func TestOnTriggerMissingHostYAMLNoOp(t *testing.T) {
 		ActorID:     1,
 	})
 	if err != nil {
-		t.Fatalf("missing host yaml should be silent, got err: %v", err)
+		t.Fatalf("missing host yaml should use fallback config, got err: %v", err)
 	}
-	if len(got) != 0 {
-		t.Fatalf("got %d sessions, want 0", len(got))
+	if len(got) != 1 {
+		t.Fatalf("got %d sessions, want 1", len(got))
+	}
+	if got[0].RoleKey != "maintainer" {
+		t.Fatalf("role = %q, want maintainer", got[0].RoleKey)
 	}
 }
 
@@ -470,8 +542,8 @@ func TestOnTriggerArchivedRoleSpawnsReplacement(t *testing.T) {
 	}
 	// Spawner inlines the pending→running transition (the runner no
 	// longer claims agent sessions; agent runs ride workflow_jobs).
-	if h.runner.sessions[1].Status != runnerdomain.SessionStatusRunning {
-		t.Fatalf("replacement row status = %q, want running", h.runner.sessions[1].Status)
+	if h.runner.sessions[1].Status != runnerdomain.SessionStatusPending {
+		t.Fatalf("replacement row status = %q, want pending", h.runner.sessions[1].Status)
 	}
 	if h.runner.sessions[1].RoleKey != "backend" {
 		t.Fatalf("replacement role_key = %q, want backend", h.runner.sessions[1].RoleKey)
@@ -568,16 +640,126 @@ func TestOnTriggerEnqueueOntoLiveSession(t *testing.T) {
 	}
 }
 
-// TestOnTriggerRewakePreservesIdleToken asserts that a re-trigger
-// against an idle row keeps the same session token (prefix / hash /
-// sealed) instead of rotating it. Under the workflow-cutover model
-// each rewake spawns a fresh _agent workflow_run pointing at the same
-// agent_sessions row; preserving the token means the new container's
-// /api/agent/* calls keep authenticating as the same session — no
-// audit gap, no DB churn on every wake. The session row's status field
-// is no longer the claim signal (workflow_job_run.status is), so this
-// test does NOT assert anything about original.Status.
-func TestOnTriggerRewakePreservesIdleToken(t *testing.T) {
+// TestOnTriggerEnqueueWhenSessionStatusLagsButRunStillRunning covers the
+// race where the session row looks non-live (idle) but a running `_agent`
+// workflow run still exists for the same session. We should enqueue onto the
+// existing session instead of creating a second run and relying on the
+// duplicate-run sweeper to clean it up later.
+func TestOnTriggerEnqueueWhenSessionStatusLagsButRunStillRunning(t *testing.T) {
+	h := newTestSpawner(t, hostMentions(), nil)
+	first, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
+		Trigger:     agentsconfig.TriggerIssueComment,
+		Comment:     &domain.CommentContext{Mentions: []string{"backend"}},
+		CauseKind:   domain.CauseKindCommentMentioned,
+		CauseID:     "200",
+		RepoID:      1,
+		IssueNumber: 7,
+		ActorID:     1,
+		RoleKey:     "backend",
+	})
+	if err != nil {
+		t.Fatalf("first OnTrigger err: %v", err)
+	}
+	if len(first) != 1 || first[0].Action != domain.SpawnActionSpawned {
+		t.Fatalf("first call = %+v, want one spawned", first)
+	}
+
+	// Simulate a lagging session row while the workflow run is still running.
+	h.runner.sessions[0].Status = runnerdomain.SessionStatusIdle
+
+	second, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
+		Trigger:     agentsconfig.TriggerIssueComment,
+		Comment:     &domain.CommentContext{Mentions: []string{"backend"}},
+		CauseKind:   domain.CauseKindCommentMentioned,
+		CauseID:     "201",
+		RepoID:      1,
+		IssueNumber: 7,
+		ActorID:     2,
+		RoleKey:     "backend",
+	})
+	if err != nil {
+		t.Fatalf("second OnTrigger err: %v", err)
+	}
+	if len(second) != 1 || second[0].Action != domain.SpawnActionEnqueued {
+		t.Fatalf("second call = %+v, want one enqueued", second)
+	}
+	if len(h.runner.sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(h.runner.sessions))
+	}
+	if len(h.workflow.Calls()) != 1 {
+		t.Fatalf("workflow.CreateAgentRun calls = %d, want 1", len(h.workflow.Calls()))
+	}
+	if len(h.runner.inputs) != 2 {
+		t.Fatalf("inputs = %d, want 2", len(h.runner.inputs))
+	}
+	if !strings.Contains(string(h.runner.inputs[1].Payload), `"cause_id":"201"`) {
+		t.Fatalf("second input is not cause_id=201: %s", string(h.runner.inputs[1].Payload))
+	}
+}
+
+// TestOnTriggerEnqueueWhenSessionStatusLagsButRunStillPending covers the
+// sister race where the session row looks non-live (idle) while a pending
+// `_agent` workflow run already exists for that session. We should enqueue
+// onto the existing session instead of creating yet another pending run.
+func TestOnTriggerEnqueueWhenSessionStatusLagsButRunStillPending(t *testing.T) {
+	h := newTestSpawner(t, hostMentions(), nil)
+	first, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
+		Trigger:     agentsconfig.TriggerIssueComment,
+		Comment:     &domain.CommentContext{Mentions: []string{"backend"}},
+		CauseKind:   domain.CauseKindCommentMentioned,
+		CauseID:     "210",
+		RepoID:      1,
+		IssueNumber: 7,
+		ActorID:     1,
+		RoleKey:     "backend",
+	})
+	if err != nil {
+		t.Fatalf("first OnTrigger err: %v", err)
+	}
+	if len(first) != 1 || first[0].Action != domain.SpawnActionSpawned {
+		t.Fatalf("first call = %+v, want one spawned", first)
+	}
+
+	// Simulate a lagging session row while the workflow run is still only pending.
+	h.runner.sessions[0].Status = runnerdomain.SessionStatusIdle
+	h.workflow.runs[0].Status = workflowdomain.RunStatusPending
+	h.workflow.jobs[h.workflow.runs[0].ID][0].Status = workflowdomain.JobStatusPending
+
+	second, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
+		Trigger:     agentsconfig.TriggerIssueComment,
+		Comment:     &domain.CommentContext{Mentions: []string{"backend"}},
+		CauseKind:   domain.CauseKindCommentMentioned,
+		CauseID:     "211",
+		RepoID:      1,
+		IssueNumber: 7,
+		ActorID:     2,
+		RoleKey:     "backend",
+	})
+	if err != nil {
+		t.Fatalf("second OnTrigger err: %v", err)
+	}
+	if len(second) != 1 || second[0].Action != domain.SpawnActionEnqueued {
+		t.Fatalf("second call = %+v, want one enqueued", second)
+	}
+	if len(h.runner.sessions) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(h.runner.sessions))
+	}
+	if len(h.workflow.Calls()) != 1 {
+		t.Fatalf("workflow.CreateAgentRun calls = %d, want 1", len(h.workflow.Calls()))
+	}
+	if len(h.runner.inputs) != 2 {
+		t.Fatalf("inputs = %d, want 2", len(h.runner.inputs))
+	}
+	if !strings.Contains(string(h.runner.inputs[1].Payload), `"cause_id":"211"`) {
+		t.Fatalf("second input is not cause_id=211: %s", string(h.runner.inputs[1].Payload))
+	}
+}
+
+// TestOnTriggerRewakeRotatesIdleToken asserts that a re-trigger against
+// an idle row rotates the session token. This severs any late traffic
+// from the previous container generation so a stale MarkIdle or tool
+// callback cannot mutate the newly rewoken session.
+func TestOnTriggerRewakeRotatesIdleToken(t *testing.T) {
 	h := newTestSpawner(t, hostSingleRole(), nil)
 	first, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
 		Trigger:     agentsconfig.TriggerIssueOpened,
@@ -599,6 +781,8 @@ func TestOnTriggerRewakePreservesIdleToken(t *testing.T) {
 	// Simulate the runner reporting clean exit (MarkSessionIdle would
 	// flip status without touching the token).
 	original.Status = runnerdomain.SessionStatusIdle
+	h.workflow.runs[0].Status = workflowdomain.RunStatusSuccess
+	h.workflow.jobs[h.workflow.runs[0].ID][0].Status = workflowdomain.JobStatusSuccess
 
 	second, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
 		Trigger:     agentsconfig.TriggerIssueOpened,
@@ -615,18 +799,18 @@ func TestOnTriggerRewakePreservesIdleToken(t *testing.T) {
 		t.Fatalf("second call = %+v, want one rewoken", second)
 	}
 	got := h.runner.sessions[0]
-	if got.SessionTokenPrefix != wantPrefix {
-		t.Errorf("rewake rotated prefix: got %q, want %q", got.SessionTokenPrefix, wantPrefix)
+	if got.SessionTokenPrefix == wantPrefix {
+		t.Errorf("rewake reused prefix %q, want a fresh token", wantPrefix)
 	}
-	if got.SessionTokenHash != wantHash {
-		t.Errorf("rewake rotated hash: got %q, want %q", got.SessionTokenHash, wantHash)
+	if got.SessionTokenHash == wantHash {
+		t.Errorf("rewake reused hash, want a fresh token")
 	}
-	if got.SessionTokenSealed != wantSealed {
-		t.Errorf("rewake rotated sealed: got %q, want %q", got.SessionTokenSealed, wantSealed)
+	if got.SessionTokenSealed == wantSealed {
+		t.Errorf("rewake reused sealed token, want a fresh token")
 	}
 	// Each wake fires one _agent workflow run — first call spawned, second
-	// rewoke. Both runs reference the same SessionID with the same
-	// SessionToken plaintext (token preserved across rewake).
+	// rewoke. Both runs reference the same SessionID but with a fresh
+	// SessionToken plaintext on the rewake.
 	calls := h.workflow.Calls()
 	if len(calls) != 2 {
 		t.Fatalf("workflow.CreateAgentRun calls = %d, want 2", len(calls))
@@ -634,14 +818,14 @@ func TestOnTriggerRewakePreservesIdleToken(t *testing.T) {
 	if calls[0].SessionID != got.ID || calls[1].SessionID != got.ID {
 		t.Errorf("workflow calls SessionIDs = %d/%d, want both = %d", calls[0].SessionID, calls[1].SessionID, got.ID)
 	}
-	if calls[0].SessionToken != calls[1].SessionToken {
-		t.Errorf("workflow calls SessionToken rotated between wakes: %q vs %q", calls[0].SessionToken, calls[1].SessionToken)
+	if calls[0].SessionToken == calls[1].SessionToken {
+		t.Errorf("workflow calls SessionToken reused across wakes: %q", calls[0].SessionToken)
 	}
 }
 
 // TestOnTriggerRewakeAfterFailed verifies that a failed session IS
-// automatically rewoken on a new trigger with a different cause.
-// The session row and its token identity are preserved (#267).
+// automatically rewoken on a new trigger with a different cause, and
+// the rewake rotates the token to isolate the new container generation.
 func TestOnTriggerRewakeAfterFailed(t *testing.T) {
 	h := newTestSpawner(t, hostSingleRole(), nil)
 	if _, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
@@ -660,6 +844,8 @@ func TestOnTriggerRewakeAfterFailed(t *testing.T) {
 	// Simulate runner terminate with a non-zero exit code. Modern
 	// MarkSessionTerminal preserves sealed.
 	original.Status = runnerdomain.SessionStatusFailed
+	h.workflow.runs[0].Status = workflowdomain.RunStatusFailed
+	h.workflow.jobs[h.workflow.runs[0].ID][0].Status = workflowdomain.JobStatusFailed
 
 	second, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
 		Trigger:     agentsconfig.TriggerIssueOpened,
@@ -685,21 +871,19 @@ func TestOnTriggerRewakeAfterFailed(t *testing.T) {
 	if len(h.runner.sessions) != 1 {
 		t.Fatalf("sessions = %d, want 1 (rewoken row, no new spawn)", len(h.runner.sessions))
 	}
-	// Token identity is preserved across rewake.
-	if original.SessionTokenPrefix != wantPrefix {
-		t.Errorf("rewake rotated prefix: got %q, want %q", original.SessionTokenPrefix, wantPrefix)
+	if original.SessionTokenPrefix == wantPrefix {
+		t.Errorf("rewake reused prefix %q, want a fresh token", wantPrefix)
 	}
-	if original.SessionTokenHash != wantHash {
-		t.Errorf("rewake rotated hash: got %q, want %q", original.SessionTokenHash, wantHash)
+	if original.SessionTokenHash == wantHash {
+		t.Errorf("rewake reused hash, want a fresh token")
 	}
-	if original.SessionTokenSealed != wantSealed {
-		t.Errorf("rewake rotated sealed: got %q, want %q", original.SessionTokenSealed, wantSealed)
+	if original.SessionTokenSealed == wantSealed {
+		t.Errorf("rewake reused sealed token, want a fresh token")
 	}
 }
 
 // TestOnTriggerRewakeAfterLegacyFailed verifies that a legacy failed row
-// (NULL sealed, from before the sealed-preservation change) IS rewoken
-// with a freshly minted token when a new trigger arrives (#267).
+// is rewoken with a freshly minted token when a new trigger arrives.
 func TestOnTriggerRewakeAfterLegacyFailed(t *testing.T) {
 	h := newTestSpawner(t, hostSingleRole(), nil)
 	if _, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
@@ -718,6 +902,8 @@ func TestOnTriggerRewakeAfterLegacyFailed(t *testing.T) {
 	// Simulate a row that died before the sealed-preservation change.
 	original.Status = runnerdomain.SessionStatusFailed
 	original.SessionTokenSealed = ""
+	h.workflow.runs[0].Status = workflowdomain.RunStatusFailed
+	h.workflow.jobs[h.workflow.runs[0].ID][0].Status = workflowdomain.JobStatusFailed
 
 	if _, err := h.spawner.OnTrigger(context.Background(), domain.TriggerInput{
 		Trigger:     agentsconfig.TriggerIssueOpened,
@@ -733,8 +919,8 @@ func TestOnTriggerRewakeAfterLegacyFailed(t *testing.T) {
 	// the sealed plaintext is missing. Spawner inlines the pending→
 	// running transition (the runner no longer claims agent sessions;
 	// agent runs ride workflow_jobs).
-	if original.Status != runnerdomain.SessionStatusRunning {
-		t.Fatalf("original status = %q, want running (rewoken)", original.Status)
+	if original.Status != runnerdomain.SessionStatusPending {
+		t.Fatalf("original status = %q, want pending (rewoken)", original.Status)
 	}
 	// Only one session row — the legacy row is rewoken, not replaced.
 	if len(h.runner.sessions) != 1 {
@@ -803,15 +989,53 @@ func TestLoadHostConfigReturnsParsedRoles(t *testing.T) {
 }
 
 // TestLoadHostConfigMissingReturnsNil — non-agent repo returns (nil, nil).
-func TestLoadHostConfigMissingReturnsNil(t *testing.T) {
+func TestLoadHostConfigMissingUsesFallback(t *testing.T) {
 	h := newTestSpawner(t, hostSingleRole(), nil)
 	h.blob.files = map[string][]byte{}
 	cfg, err := h.spawner.LoadHostConfig(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("LoadHostConfig err: %v", err)
 	}
-	if cfg != nil {
-		t.Fatalf("LoadHostConfig returned non-nil for missing file: %+v", cfg)
+	if cfg == nil {
+		t.Fatal("LoadHostConfig returned nil for missing host config")
+	}
+	if _, ok := cfg.Roles["maintainer"]; !ok {
+		t.Fatalf("fallback config missing maintainer role; got keys %v", roleKeyNames(cfg.Roles))
+	}
+	if _, ok := cfg.Roles["fast-worker"]; !ok {
+		t.Fatalf("fallback config missing fast-worker role; got keys %v", roleKeyNames(cfg.Roles))
+	}
+}
+
+func TestLoadHostConfigUsesResolvedCommitSnapshot(t *testing.T) {
+	h := newTestSpawner(t, hostSingleRole(), nil)
+	hostFS := "/fake/alice/myproject.git"
+	snapshotSHA := "repoSNAPSHOT0000000000000000000000000000"
+	h.git.add(hostFS, "main", snapshotSHA)
+
+	brokenMainYAML := teamYAML + `reviewers:
+  rules:
+    - paths: ["apps/web/**"]
+      reviewers: [frontend]
+  fallback: [backend]
+`
+	backendMD := agentMD("triggers:\n  issue.opened: {}\npermission: write\ntools: [all]", "hi")
+	h.blob.files = map[string][]byte{
+		"main:" + agentsconfig.HostConfigPath:                      []byte(brokenMainYAML),
+		"main:" + agentsconfig.AgentsDir + "/backend.md":           []byte(backendMD),
+		snapshotSHA + ":" + agentsconfig.HostConfigPath:            []byte(teamYAML),
+		snapshotSHA + ":" + agentsconfig.AgentsDir + "/backend.md": []byte(backendMD),
+	}
+
+	cfg, err := h.spawner.LoadHostConfig(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("LoadHostConfig err: %v", err)
+	}
+	if cfg == nil {
+		t.Fatalf("LoadHostConfig returned nil")
+	}
+	if _, ok := cfg.Roles["backend"]; !ok {
+		t.Fatalf("config missing backend role; got keys %v", roleKeyNames(cfg.Roles))
 	}
 }
 
@@ -890,6 +1114,8 @@ func TestOnTriggerRewakeResumeFailureMarksFailed(t *testing.T) {
 	// Step 2: set the session to idle (simulates clean shutdown).
 	original := h.runner.sessions[0]
 	original.Status = runnerdomain.SessionStatusIdle
+	h.workflow.runs[0].Status = workflowdomain.RunStatusSuccess
+	h.workflow.jobs[h.workflow.runs[0].ID][0].Status = workflowdomain.JobStatusSuccess
 
 	// Step 3: make the next CreateAgentRun (for this session) fail.
 	h.workflow.failOn[original.ID] = fmt.Errorf("simulated workflow dispatch failure")

@@ -3,55 +3,8 @@ package agentsconfig
 import (
 	"errors"
 	"reflect"
-	"sort"
 	"testing"
 )
-
-// mapFileProvider is a map-backed FileProvider for testing LoadHostConfig
-// without touching git or the filesystem. Keys are repo-relative paths.
-// ListDir returns the direct children of dir (paths that have dir as a
-// prefix and no further `/` after it).
-type mapFileProvider struct {
-	files map[string][]byte
-}
-
-func (p *mapFileProvider) ReadFile(path string) ([]byte, bool) {
-	b, ok := p.files[path]
-	return b, ok
-}
-
-func (p *mapFileProvider) ListDir(dir string) ([]string, bool) {
-	prefix := dir
-	if prefix != "" && prefix[len(prefix)-1] != '/' {
-		prefix += "/"
-	}
-	var out []string
-	for path := range p.files {
-		if len(path) <= len(prefix) || path[:len(prefix)] != prefix {
-			continue
-		}
-		rest := path[len(prefix):]
-		// Direct children only: no further path separator.
-		if indexOfSlash(rest) >= 0 {
-			continue
-		}
-		out = append(out, path)
-	}
-	if len(out) == 0 {
-		return nil, false
-	}
-	sort.Strings(out)
-	return out, true
-}
-
-func indexOfSlash(s string) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '/' {
-			return i
-		}
-	}
-	return -1
-}
 
 // TestParseAgentFile_Happy pins the contract: front matter (triggers,
 // permission, tools rule-refs, scope, mcp, llm) is parsed; the Markdown
@@ -375,8 +328,14 @@ func TestLoadHostConfig_MissingAgentsYAML(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
-	if cfg != nil {
-		t.Fatalf("expected nil config for missing agents.yml, got %+v", cfg)
+	if cfg == nil {
+		t.Fatalf("expected fallback config for missing agents.yml, got nil")
+	}
+	if _, ok := cfg.Roles["maintainer"]; !ok {
+		t.Fatalf("fallback config missing maintainer role")
+	}
+	if _, ok := cfg.Roles["fast-worker"]; !ok {
+		t.Fatalf("fallback config missing fast-worker role")
 	}
 }
 

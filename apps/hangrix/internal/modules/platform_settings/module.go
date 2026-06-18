@@ -18,16 +18,43 @@ var lifecycleDefinitions = []domain.Definition{
 		Key:         "lifecycle.idle_stop_threshold",
 		Default:     "1h",
 		Description: "How long an idle session waits before the platform flags its container for docker stop",
+		Type:        domain.ValueTypeDuration,
 	},
 	{
 		Key:         "lifecycle.idle_removal_threshold",
 		Default:     "168h",
 		Description: "How long after a container is flagged for cleanup before the runner's reaper docker rm's it (7 days)",
+		Type:        domain.ValueTypeDuration,
 	},
 	{
 		Key:         "lifecycle.abandoned_cleanup_threshold",
 		Default:     "720h",
 		Description: "How long after a container is flagged for cleanup with no runner pickup before the platform gives up and clears the container_id (30 days)",
+		Type:        domain.ValueTypeDuration,
+	},
+	{
+		Key:         domain.SettingFirepowerEnabled,
+		Default:     "false",
+		Description: "Temporary global firepower mode. When enabled, selected agent roles prefer gpt-5.5 and runner task polling can use the elevated firepower batch limit.",
+		Type:        domain.ValueTypeBool,
+	},
+	{
+		Key:         domain.SettingRunnerMaxTasksPerPoll,
+		Default:     "64",
+		Description: "Default server-side maximum workflow tasks returned to one runner poll.",
+		Type:        domain.ValueTypeInt,
+	},
+	{
+		Key:         domain.SettingFirepowerRunnerMaxTasks,
+		Default:     "256",
+		Description: "Server-side maximum workflow tasks returned to one runner poll while firepower mode is enabled.",
+		Type:        domain.ValueTypeInt,
+	},
+	{
+		Key:         domain.SettingChatGPTFastMode,
+		Default:     "false",
+		Description: "When enabled, OpenAI-native ChatGPT providers are called through the /fast Responses API path.",
+		Type:        domain.ValueTypeBool,
 	},
 }
 

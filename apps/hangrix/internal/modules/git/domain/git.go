@@ -199,6 +199,16 @@ type Git interface {
 	// but is not a regular file), ErrRefChanged (concurrent write).
 	EditAndCommit(path, branch, baseCommitSHA, filePath string, newContent []byte, message string, author, committer Signature) (newCommitSHA string, err error)
 
+	// UpsertFilesAndCommit writes or replaces every file in files on the HEAD
+	// commit of branch, creates a single commit with message, and advances the
+	// branch ref with the same atomic compare-and-swap semantics as
+	// EditAndCommit.
+	//
+	// Missing intermediate directories are created automatically. Existing
+	// regular files are replaced; if an intermediate path segment resolves to a
+	// non-directory, ErrNotABlob is returned.
+	UpsertFilesAndCommit(path, branch, baseCommitSHA string, files map[string][]byte, message string, author, committer Signature) (newCommitSHA string, err error)
+
 	// TagAnnotation reads the annotation of refs/tags/tagName. Returns
 	// ErrRefNotFound when the tag does not exist. For lightweight tags,
 	// Message is empty and Kind is "lightweight" (NOT an error).

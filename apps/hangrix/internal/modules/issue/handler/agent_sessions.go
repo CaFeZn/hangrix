@@ -14,6 +14,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -24,6 +25,7 @@ import (
 	agentsessiondomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/agent_session/domain"
 	authdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/auth/domain"
 	runnerdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/runner/domain"
+	workflowdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/workflow/domain"
 )
 
 // publicAgentSession is the DTO returned by the sessions list endpoint.
@@ -42,6 +44,14 @@ type publicAgentSession struct {
 	ErrorMessage string          `json:"error_message,omitempty"`
 	CreatedAt    time.Time       `json:"created_at"`
 	EndedAt      *time.Time      `json:"ended_at,omitempty"`
+}
+
+type pendingAgentRunMeta struct {
+	RunID      int64      `json:"run_id"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
 }
 
 // publicAgentMessage is one row of an agent session's message log.
@@ -93,7 +103,28 @@ func (h *Handler) listAgentSessions(w http.ResponseWriter, r *http.Request) {
 			EndedAt:      s.EndedAt,
 		})
 	}
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{"items": items})
+	resp := map[string]any{"items": items}
+	if h.workflowSvc != nil {
+		ref := fmt.Sprintf("issue/%d", iss.Number)
+		if runs, _, err := h.workflowSvc.ListAgentRunsByRepo(r.Context(), rc.repo.ID, string(workflowdomain.RunStatusPending), 0, 50); err == nil {
+			pending := make([]pendingAgentRunMeta, 0, len(runs))
+			for _, run := range runs {
+				if run != nil && run.Ref == ref {
+					pending = append(pending, pendingAgentRunMeta{
+						RunID:      run.ID,
+						Status:     string(run.Status),
+						CreatedAt:  run.CreatedAt,
+						StartedAt:  run.StartedAt,
+						FinishedAt: run.FinishedAt,
+					})
+				}
+			}
+			if len(pending) > 0 {
+				resp["pending_agent_runs"] = pending
+			}
+		}
+	}
+	httpx.WriteJSON(w, http.StatusOK, resp)
 }
 
 func (h *Handler) listAgentSessionMessages(w http.ResponseWriter, r *http.Request) {

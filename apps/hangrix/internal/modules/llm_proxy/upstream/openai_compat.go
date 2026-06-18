@@ -44,11 +44,36 @@ func (*OpenAICompat) Respond(ctx context.Context, req *Request) (*Response, erro
 	if base == "" {
 		return nil, ErrBaseURLRequired
 	}
-	body, err := json.Marshal(buildChatCompletionsBody(req))
-	if err != nil {
-		return nil, fmt.Errorf("encode chat-completions request: %w", err)
+	return respondChatCompletions(ctx, req, base, buildChatCompletionsBody(req), "chat-completions")
+}
+
+const defaultDeepSeekBaseURL = "https://api.deepseek.com"
+
+// DeepSeek talks directly to DeepSeek's OpenAI-compatible Chat Completions API.
+// It intentionally gets its own provider type instead of hiding behind the
+// generic openai-compat adapter so we can apply DeepSeek-only wire details:
+// a default api.deepseek.com base URL, OpenAI-format `thinking` object, and
+// effort normalization that matches DeepSeek's documented high/max buckets.
+type DeepSeek struct{}
+
+func NewDeepSeek() *DeepSeek { return &DeepSeek{} }
+
+func (*DeepSeek) Type() domain.ProviderType { return domain.ProviderTypeDeepSeek }
+
+func (*DeepSeek) Respond(ctx context.Context, req *Request) (*Response, error) {
+	base := strings.TrimRight(req.BaseURL, "/")
+	if base == "" {
+		base = defaultDeepSeekBaseURL
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", bytes.NewReader(body))
+	return respondChatCompletions(ctx, req, base, buildDeepSeekChatCompletionsBody(req), "deepseek")
+}
+
+func respondChatCompletions(ctx context.Context, req *Request, base string, body chatRequest, label string) (*Response, error) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("encode %s request: %w", label, err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/chat/completions", bytes.NewReader(encoded))
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +83,7 @@ func (*OpenAICompat) Respond(ctx context.Context, req *Request) (*Response, erro
 
 	resp, err := req.Client.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("call chat-completions: %w", err)
+		return nil, fmt.Errorf("call %s: %w", label, err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
@@ -84,7 +109,12 @@ type chatRequest struct {
 	MaxTokens       int           `json:"max_tokens,omitempty"`
 	Temperature     *float64      `json:"temperature,omitempty"`
 	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
+	Thinking        *chatThinking `json:"thinking,omitempty"`
 	Stream          bool          `json:"stream"`
+}
+
+type chatThinking struct {
+	Type string `json:"type"`
 }
 
 type chatMessage struct {
@@ -153,6 +183,41 @@ func buildChatCompletionsBody(req *Request) chatRequest {
 		body.ToolChoice = "auto"
 	}
 	return body
+}
+
+func buildDeepSeekChatCompletionsBody(req *Request) chatRequest {
+	body := buildChatCompletionsBody(req)
+	body.ReasoningEffort = normalizeDeepSeekReasoningEffort(req.ReasoningEffort)
+	if typ := deepSeekThinkingType(req.Thinking); typ != "" {
+		body.Thinking = &chatThinking{Type: typ}
+	}
+	return body
+}
+
+func deepSeekThinkingType(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "":
+		return ""
+	case "enabled", "adaptive":
+		return "enabled"
+	case "disabled":
+		return "disabled"
+	default:
+		return ""
+	}
+}
+
+func normalizeDeepSeekReasoningEffort(v string) string {
+	switch s := strings.ToLower(strings.TrimSpace(v)); s {
+	case "minimal", "low", "medium":
+		return "high"
+	case "high":
+		return "high"
+	case "xhigh", "max":
+		return "max"
+	default:
+		return strings.TrimSpace(v)
+	}
 }
 
 // pendingAssistant accumulates an assistant chat message under

@@ -605,6 +605,16 @@ WHERE c.issue_id = ANY(sqlc.arg('issue_ids')::BIGINT[])
   AND i.state = 'open'
   AND c.body ~* ('(^|[^A-Za-z0-9_])@' || sqlc.arg('username')::TEXT || '([^A-Za-z0-9_]|$)');
 
+-- name: ListQueuedAgentRunIssueIDs :many
+SELECT DISTINCT i.id
+FROM issues i
+JOIN workflow_runs r
+  ON r.repo_id = i.repo_id
+ AND r.workflow_name = '_agent'
+ AND r.ref = 'issue/' || i.number::text
+WHERE i.id = ANY(sqlc.arg('issue_ids')::BIGINT[])
+  AND r.status IN ('pending', 'running');
+
 -- name: ListAllDescendantIssues :many
 -- Recursive walk from a set of root issue IDs. Returns every descendant
 -- (any state) with full issue columns so the frontend can build the tree.

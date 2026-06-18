@@ -99,5 +99,7 @@ type mockStore struct{}
 
 func (m *mockStore) Get(_ context.Context, _ string) (string, bool, error)          { return "", false, nil }
 func (m *mockStore) GetDuration(_ context.Context, _ string) (time.Duration, error) { return 0, nil }
+func (m *mockStore) GetBool(_ context.Context, _ string) (bool, error)              { return false, nil }
+func (m *mockStore) GetInt(_ context.Context, _ string) (int, error)                { return 0, nil }
 func (m *mockStore) Set(_ context.Context, _, _, _ string) error                    { return nil }
 func (m *mockStore) List(_ context.Context) ([]Setting, error)                      { return nil, nil }

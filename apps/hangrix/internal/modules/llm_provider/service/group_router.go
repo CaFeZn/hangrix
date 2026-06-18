@@ -77,6 +77,14 @@ func (r *GroupRouter) ResolveModel(ctx context.Context, model string) (domain.Ro
 		}
 	}
 	if len(candidates) == 0 {
+		fallback := r.bestSoftFallbackCandidate(ctx, members)
+		if fallback != nil {
+			return domain.RouteResolution{
+				Kind:       domain.RouteKindGroup,
+				GroupName:  g.Name,
+				Candidates: []domain.ResolvedCandidate{*fallback},
+			}, nil
+		}
 		return domain.RouteResolution{}, domain.ErrGroupAllUnavailable
 	}
 	return domain.RouteResolution{
@@ -84,6 +92,33 @@ func (r *GroupRouter) ResolveModel(ctx context.Context, model string) (domain.Ro
 		GroupName:  g.Name,
 		Candidates: candidates,
 	}, nil
+}
+
+func (r *GroupRouter) bestSoftFallbackCandidate(ctx context.Context, members []*domain.GroupMember) *domain.ResolvedCandidate {
+	var best *domain.GroupMember
+	for _, m := range members {
+		if m == nil || m.ManualDisabled || m.ProviderDisabled {
+			continue
+		}
+		if m.AutoDisabledUntil == nil {
+			continue
+		}
+		if best == nil || m.AutoDisabledUntil.Before(*best.AutoDisabledUntil) || (m.AutoDisabledUntil.Equal(*best.AutoDisabledUntil) && m.Priority < best.Priority) {
+			best = m
+		}
+	}
+	if best == nil {
+		return nil
+	}
+	prov, err := r.repo.GetProviderByID(ctx, best.ProviderID)
+	if err != nil {
+		return nil
+	}
+	return &domain.ResolvedCandidate{
+		Provider: prov,
+		Model:    best.Model,
+		MemberID: best.ID,
+	}
 }
 
 // ReportAttempt feeds a dispatch outcome back to the state machine.
@@ -112,7 +147,11 @@ func (r *GroupRouter) ReportAttempt(ctx context.Context, memberID int64, outcome
 		patch.LastFailureAt = &now
 		patch.LastFailureMsg = &outcome.Message
 		if isRetryableFailure(outcome.StatusCode) {
-			newStep, until := NextBackoff(m.BackoffStep)
+			prov, err := r.repo.GetProviderByID(ctx, m.ProviderID)
+			if err != nil {
+				return err
+			}
+			newStep, until := NextBackoffForFailure(m.BackoffStep, prov.BaseURL, outcome.StatusCode, outcome.Message)
 			patch.BackoffStep = &newStep
 			patch.AutoDisabledUntil = &until
 		}

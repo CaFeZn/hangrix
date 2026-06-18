@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"github.com/hangrix/hangrix/apps/hangrix-agent/internal/tools"
 	"github.com/hangrix/hangrix/apps/hangrix-agent/internal/tools/local"
 	"github.com/hangrix/hangrix/apps/hangrix-agent/internal/tools/platform"
+	agentv1 "github.com/hangrix/hangrix/gen/go/hangrix/agent/v1"
 )
 
 // TestLoopSmoke is the end-to-end rehearsal: scripted LLM (returns
@@ -188,6 +190,85 @@ func TestLoopSmoke(t *testing.T) {
 	}
 	if got := llmCallCount.Load(); got != 2 {
 		t.Errorf("expected 2 LLM calls (one with tools, one final), got %d", got)
+	}
+}
+
+func TestLoopContextLimitCompactsAndRetries(t *testing.T) {
+	t.Parallel()
+
+	var llmCallCount atomic.Int32
+	var secondCallBody atomic.Value
+	llmServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		call := llmCallCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if call == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"context_too_large","type":"context_limit","message":"context length exceeded"}}`))
+			return
+		}
+		secondCallBody.Store(body)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "resp_recovered",
+			"output": []map[string]any{
+				{"type": "message", "role": "assistant", "content": []map[string]any{{"type": "output_text", "text": "Recovered after compacting."}}},
+			},
+			"usage": map[string]any{"input_tokens": 100, "output_tokens": 5, "total_tokens": 105},
+		})
+	}))
+	t.Cleanup(llmServer.Close)
+
+	history := make([]*agentv1.HistoryItem, 0, 40)
+	for i := 0; i < 40; i++ {
+		history = append(history, &agentv1.HistoryItem{
+			Role:    "user",
+			Content: fmt.Sprintf("DROP_ME_%02d %s", i, strings.Repeat("x", 200)),
+		})
+	}
+
+	llmClient := llm.New(llmServer.URL, "test-token")
+	bundle := local.Build()
+	registry := tools.Build(bundle.Tools, nil, nil, []string{"*"})
+
+	h := startLoop(t, llmClient, registry, bundle.Async, func(o *loopOpts) {
+		o.history = history
+	})
+	h.waitForReady(t, time.Second)
+	h.fake.pushEvent("issue.comment.mentioned", json.RawMessage(`{"body":"KEEP_CURRENT_EVENT"}`))
+	time.Sleep(500 * time.Millisecond)
+	frames, err := h.shutdown(t)
+	if err != nil {
+		t.Fatalf("loop returned error: %v", err)
+	}
+	if got := llmCallCount.Load(); got != 2 {
+		t.Fatalf("expected first call to fail and second to retry after compaction, got %d calls", got)
+	}
+	rawBody, _ := secondCallBody.Load().([]byte)
+	if len(rawBody) == 0 {
+		t.Fatal("did not capture retry request body")
+	}
+	body := string(rawBody)
+	for _, want := range []string{"previous_session_summary", "Emergency context reset", "KEEP_CURRENT_EVENT"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("retry body missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "DROP_ME_00") {
+		t.Fatalf("retry body still contains earliest dropped history:\n%s", body)
+	}
+	var sawWarning bool
+	for _, f := range frames {
+		if f.Kind == "log" && strings.Contains(f.Msg, "context limit hit") {
+			sawWarning = true
+			break
+		}
+	}
+	if !sawWarning {
+		t.Fatal("expected context-limit warning log frame")
 	}
 }
 

@@ -43,14 +43,7 @@ func NewProvider(deps *Deps) *Loop {
 		// the same parse error over and over.
 		panic(err)
 	}
-	// Hold the StreamInputs idle grace open while local async work
-	// (sleep timers, background bash tasks) is pending. Without this,
-	// a sleep(5min) on a quiet stream would race the 5-min grace and
-	// exit the agent before the timer ever fired.
-	if deps.Async != nil {
-		transport.SetKeepAlive(func() bool { return deps.Async.HasRunningJobs() > 0 })
-	}
-	return NewLoop(
+	loop := NewLoop(
 		transport,
 		transport,
 		deps.LLM,
@@ -64,6 +57,17 @@ func NewProvider(deps *Deps) *Loop {
 		deps.Cfg.LLMReasoningEffort,
 		deps.Cfg.LLMThinking,
 	)
+
+	// Hold the StreamInputs idle grace open while either:
+	//   1. local async work is pending (sleep timers, background bash), or
+	//   2. the current LLM/tool turn is still running.
+	//
+	// (2) matters because the stream's idle timer is anchored to the last
+	// inbound server frame, not to local activity. A long turn that ends by
+	// scheduling sleep would otherwise inherit a stale EOF computed mid-turn
+	// and die immediately after the tool call.
+	transport.SetKeepAlive(loop.holdWakeOpen)
+	return loop
 }
 
 func Module() *ioc.Module {

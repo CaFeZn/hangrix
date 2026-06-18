@@ -7,6 +7,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -77,12 +78,48 @@ func (s *Service) GetDuration(ctx context.Context, key string) (time.Duration, e
 		return 0, err
 	}
 	if !found || v == "" {
-		if def, ok := s.registry.Lookup(key); ok {
-			return time.ParseDuration(def.Default)
+		if s.registry != nil {
+			if def, ok := s.registry.Lookup(key); ok {
+				return time.ParseDuration(def.Default)
+			}
 		}
 		return 0, nil
 	}
 	return time.ParseDuration(v)
+}
+
+// GetBool satisfies domain.Store.
+func (s *Service) GetBool(ctx context.Context, key string) (bool, error) {
+	v, found, err := s.Get(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	if !found || v == "" {
+		if s.registry != nil {
+			if def, ok := s.registry.Lookup(key); ok {
+				return domain.ParseBoolValue(def.Default)
+			}
+		}
+		return false, nil
+	}
+	return domain.ParseBoolValue(v)
+}
+
+// GetInt satisfies domain.Store.
+func (s *Service) GetInt(ctx context.Context, key string) (int, error) {
+	v, found, err := s.Get(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	if !found || v == "" {
+		if s.registry != nil {
+			if def, ok := s.registry.Lookup(key); ok {
+				return domain.ParseIntValue(def.Default)
+			}
+		}
+		return 0, nil
+	}
+	return domain.ParseIntValue(v)
 }
 
 // Set satisfies domain.Store. Writes through to Postgres then
@@ -102,7 +139,30 @@ func (s *Service) Set(ctx context.Context, key, value, description string) error
 // calls this infrequently enough that a cache isn't worth the
 // staleness risk.
 func (s *Service) List(ctx context.Context) ([]domain.Setting, error) {
-	return s.repo.ListSettings(ctx)
+	rows, err := s.repo.ListSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[string]domain.Setting, len(rows))
+	for _, row := range rows {
+		byKey[row.Key] = row
+	}
+	for _, def := range s.registry.Definitions() {
+		if _, ok := byKey[def.Key]; ok {
+			continue
+		}
+		byKey[def.Key] = domain.Setting{
+			Key:         def.Key,
+			Value:       def.Default,
+			Description: def.Description,
+		}
+	}
+	out := make([]domain.Setting, 0, len(byKey))
+	for _, row := range byKey {
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
 }
 
 // cacheGet returns a cached value if it's still fresh.

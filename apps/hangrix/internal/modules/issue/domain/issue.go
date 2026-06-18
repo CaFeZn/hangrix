@@ -371,7 +371,7 @@ type Issue struct {
 	// AgentRole is set on agent-created issues. Empty for human-created
 	// issues. Mirrors the same field on Comment and Event.
 	AgentRole      string
-	ActorID        int64     // FK to actors(id); replaces denormalized actor_* columns
+	ActorID        int64 // FK to actors(id); replaces denormalized actor_* columns
 	Actor          actor.Ref
 	Title          string
 	Body           string
@@ -542,6 +542,7 @@ type IssueIndicators struct {
 	IssueID                 int64
 	HasPendingQuestionnaire bool // caller has an unanswered open questionnaire on this issue
 	HasAgentMention         bool // open issue and an agent comment mentions @caller
+	HasQueuedAgentRun       bool // an internal _agent workflow run is already queued/running for this issue
 }
 
 // ListFilter narrows GetByRepo. Empty State means "any".
@@ -794,8 +795,6 @@ var (
 	ErrContributionNotFound = errors.New("contribution not found")
 )
 
-
-
 // OpenDescendant is one row of the open-sub-issue blocker list returned by
 // ListOpenDescendants. Depth=1 means a direct child; >1 is a deeper descendant.
 // Title is included so the agent error and UI tooltip can render
@@ -813,7 +812,7 @@ type OpenDescendant struct {
 // payload (code + sub_issues list) into the tool result so the LLM can decide
 // what to do next without re-parsing free text.
 type BlockError struct {
-	Code      string            `json:"code"`                // e.g. "incomplete_sub_issues"
+	Code      string            `json:"code"` // e.g. "incomplete_sub_issues"
 	Message   string            `json:"message"`
 	SubIssues []*OpenDescendant `json:"sub_issues,omitempty"`
 }
@@ -979,17 +978,17 @@ func ComputeReadyState(iss *Issue, deps []*Dependency, depStates map[int64]State
 
 // PlanNode is one node in the plan tree returned by GET .../plan.
 type PlanNode struct {
-	Number       int64          `json:"number"`
-	Title        string         `json:"title"`
-	State        State          `json:"state"`
-	Actor        *Actor         `json:"actor,omitempty"`
-	AgentRole    string         `json:"agent_role,omitempty"`
-	ReviewStatus *ReviewStatus  `json:"review_status,omitempty"`
-	TodoSummary  *TodoSummary   `json:"todo_summary,omitempty"`
-	DependsOn    []int64        `json:"depends_on"`
-	Blocked      bool           `json:"blocked"`
-	Ready        bool           `json:"ready"`
-	Children     []*PlanNode    `json:"children"`
+	Number       int64         `json:"number"`
+	Title        string        `json:"title"`
+	State        State         `json:"state"`
+	Actor        *Actor        `json:"actor,omitempty"`
+	AgentRole    string        `json:"agent_role,omitempty"`
+	ReviewStatus *ReviewStatus `json:"review_status,omitempty"`
+	TodoSummary  *TodoSummary  `json:"todo_summary,omitempty"`
+	DependsOn    []int64       `json:"depends_on"`
+	Blocked      bool          `json:"blocked"`
+	Ready        bool          `json:"ready"`
+	Children     []*PlanNode   `json:"children"`
 }
 
 // PlanRollup aggregates progress across the plan subtree.

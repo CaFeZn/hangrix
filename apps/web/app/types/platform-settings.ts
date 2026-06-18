@@ -32,3 +32,9 @@ export const LIFECYCLE_KEYS = {
   idleRemoval: 'lifecycle.idle_removal_threshold',
   abandonedCleanup: 'lifecycle.abandoned_cleanup_threshold',
 } as const
+
+export const FIREPOWER_KEYS = {
+  enabled: 'firepower.enabled',
+  runnerMaxTasks: 'runner.max_tasks_per_poll',
+  firepowerRunnerMaxTasks: 'firepower.runner_max_tasks_per_poll',
+} as const

@@ -108,6 +108,7 @@ sql:
       - internal/modules/llm_provider/infra/migrations/00006_add_actor_id_to_llm_providers.sql
       - internal/modules/llm_provider/infra/migrations/00007_create_model_groups.sql
       - internal/modules/llm_provider/infra/migrations/00008_create_llm_models.sql
+      - internal/modules/llm_provider/infra/migrations/00009_add_deepseek_provider_type.sql
     gen:
       go:
         package: llmproviderdb
@@ -134,6 +135,8 @@ sql:
       - internal/modules/actor/infra/migrations
       - internal/modules/issue/infra/migrations
       - internal/modules/questionnaire/infra/migrations
+      - internal/modules/runner/infra/migrations
+      - internal/modules/workflow/infra/migrations
     gen:
       go:
         package: issuedb
@@ -156,6 +159,14 @@ sql:
       - internal/modules/repo/infra/migrations
       - internal/modules/actor/infra/migrations
       - internal/modules/runner/infra/migrations
+      - internal/modules/llm_provider/infra/migrations/00001_create_llm_providers.sql
+      - internal/modules/llm_provider/infra/migrations/00002_add_provider_disabled.sql
+      - internal/modules/llm_provider/infra/migrations/00003_add_usage_body_columns.sql
+      - internal/modules/llm_provider/infra/migrations/00005_fix_mock_provider_constraint.sql
+      - internal/modules/llm_provider/infra/migrations/00006_add_actor_id_to_llm_providers.sql
+      - internal/modules/llm_provider/infra/migrations/00007_create_model_groups.sql
+      - internal/modules/llm_provider/infra/migrations/00008_create_llm_models.sql
+      - internal/modules/llm_provider/infra/migrations/00009_add_deepseek_provider_type.sql
     gen:
       go:
         package: runnerdb
@@ -245,6 +256,7 @@ sql:
       - internal/modules/llm_provider/infra/migrations/00006_add_actor_id_to_llm_providers.sql
       - internal/modules/llm_provider/infra/migrations/00007_create_model_groups.sql
       - internal/modules/llm_provider/infra/migrations/00008_create_llm_models.sql
+      - internal/modules/llm_provider/infra/migrations/00009_add_deepseek_provider_type.sql
       - internal/modules/runner/infra/migrations
     gen:
       go:
@@ -357,4 +369,3 @@ sql:
         emit_interface: false
         emit_exact_table_names: false
         emit_empty_slices: true
-

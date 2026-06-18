@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { toTypedSchema } from '@vee-validate/zod'
 import * as z from 'zod'
-import { AlertTriangle, Clock, Key, Plus, Settings, Shield, Trash2, Users, VolumeX } from 'lucide-vue-next'
+import { AlertTriangle, Bot, Clock, Key, Plus, Server, Settings, Shield, Trash2, Users, VolumeX } from 'lucide-vue-next'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -38,6 +38,8 @@ import {
 } from '@/components/ui/table'
 import type { BranchProtection, PublicRepo, RepoMember, RepoMemberListResp, RepoRefs } from '~/types/repo'
 import AutomationSettings from '@/components/repo/AutomationSettings.vue'
+import HangrixSettings from '@/components/repo/HangrixSettings.vue'
+import RunnerSettings from '@/components/repo/RunnerSettings.vue'
 import VariableSettings from '@/components/repo/VariableSettings.vue'
 import SilenceSettings from '@/components/silence/SilenceSettings.vue'
 
@@ -412,6 +414,14 @@ onMounted(load)
         <TabsTrigger value="automation">
           <Clock class="size-4" />
           <span class="ml-1.5">{{ t('repo.automation.tabLabel') }}</span>
+        </TabsTrigger>
+        <TabsTrigger value="hangrix">
+          <Bot class="size-4" />
+          <span class="ml-1.5">{{ t('repo.hangrix.tabLabel') }}</span>
+        </TabsTrigger>
+        <TabsTrigger value="runner">
+          <Server class="size-4" />
+          <span class="ml-1.5">{{ t('repo.runner.tabLabel') }}</span>
         </TabsTrigger>
         <TabsTrigger value="variables">
           <Key class="size-4" />
@@ -842,6 +852,14 @@ onMounted(load)
 
       <TabsContent value="automation" class="mt-0">
         <AutomationSettings :owner="owner" :name="name" />
+      </TabsContent>
+
+      <TabsContent value="hangrix" class="mt-0">
+        <HangrixSettings :owner="owner" :name="name" :default-branch="repo.default_branch" />
+      </TabsContent>
+
+      <TabsContent value="runner" class="mt-0">
+        <RunnerSettings :repo-owner-kind="repo.owner_kind" :repo-owner-name="repo.owner_name" />
       </TabsContent>
 
       <TabsContent value="variables" class="mt-0">

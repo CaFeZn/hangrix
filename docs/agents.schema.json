@@ -118,12 +118,12 @@
         },
         "reasoning_effort": {
           "type": "string",
-          "description": "Effort knob. The parser accepts any string for forward-compat; canonical values 'minimal' / 'low' / 'medium' / 'high' / 'xhigh' / 'max'. On the Anthropic adapter this maps to `output_config.effort` (Claude 4.6+ canonical — controls thinking depth AND overall token spend including tool calls); the legacy `thinking.budget_tokens` translation only fires when `thinking: enabled` is set. OpenAI-compat adapters pass it through verbatim. Empty string is equivalent to omission."
+          "description": "Effort knob. The parser accepts any string for forward-compat; canonical values 'minimal' / 'low' / 'medium' / 'high' / 'xhigh' / 'max'. On the Anthropic adapter this maps to `output_config.effort` (Claude 4.6+ canonical — controls thinking depth AND overall token spend including tool calls); the legacy `thinking.budget_tokens` translation only fires when `thinking: enabled` is set. On the DeepSeek adapter, minimal/low/medium normalize to high and xhigh/max normalize to max. OpenAI-compat adapters pass it through verbatim. Empty string is equivalent to omission."
         },
         "thinking": {
           "type": "string",
           "enum": ["adaptive", "enabled", "disabled"],
-          "description": "Anthropic extended-thinking mode. 'adaptive' (Claude 4.6+ canonical — `thinking: {type: adaptive}`; the only mode Opus 4.7/4.8 accepts) lets the model decide per turn whether to reason, guided by `reasoning_effort`. 'enabled' is the legacy manual path (`thinking: {type: enabled, budget_tokens: N}` with N derived from reasoning_effort; supported on Claude 4.5/4.6). 'disabled' (or omitting the field) leaves extended thinking off. Non-Anthropic upstream adapters ignore this field."
+          "description": "Extended-thinking mode. On Anthropic, 'adaptive' (Claude 4.6+ canonical — `thinking: {type: adaptive}`; the only mode Opus 4.7/4.8 accepts) lets the model decide per turn whether to reason, guided by `reasoning_effort`; 'enabled' is the legacy manual path (`thinking: {type: enabled, budget_tokens: N}` with N derived from reasoning_effort; supported on Claude 4.5/4.6); 'disabled' leaves extended thinking off. On DeepSeek, adaptive/enabled/disabled map to `thinking.type`. Other upstream adapters ignore this field."
         },
         "max_context_tokens": {
           "type": "integer",

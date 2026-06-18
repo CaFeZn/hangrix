@@ -422,6 +422,229 @@ func (r *PostgresRepo) CountRecentSessions(ctx context.Context, filter domain.Se
 	return r.q.CountRecentSessions(ctx, params)
 }
 
+// ListStaleRunningSessions returns running issue-scoped sessions whose last
+// observable activity is older than threshold. "Observable activity" is the
+// max of latest LLM usage timestamp and latest agent_session_message
+// timestamp; either source is enough to prove the wake is still doing work.
+func (r *PostgresRepo) ListStaleRunningSessions(ctx context.Context, threshold time.Duration, limit int) ([]*domain.StaleRunningSession, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	const staleRunningSessionsSQL = `
+WITH latest_llm AS (
+    SELECT session_id, MAX(created_at) AS last_llm_at
+    FROM llm_usage_log
+    GROUP BY session_id
+),
+latest_msg AS (
+    SELECT session_id, MAX(created_at) AS last_msg_at
+    FROM agent_session_messages
+    GROUP BY session_id
+)
+SELECT
+    s.id, s.runner_id, s.repo_id, s.issue_number, s.status, s.role, s.model,
+    s.agent_image, s.working_branch, s.base_branch, s.host_addendum, s.env,
+    s.session_token_prefix, s.session_token_hash, s.session_token_sealed,
+    s.session_token_revoked_at, s.exit_code, s.error_message, s.created_at,
+    s.claimed_at, s.started_at, s.ended_at, s.repo_sha, s.role_key,
+    s.cause_kind, s.cause_id, s.role_config, s.container_id,
+    s.container_last_used_at, s.container_cleanup_pending,
+    s.container_stop_pending, s.container_stopped_at, s.running_jobs,
+    s.created_by_actor_id, s.actor_id,
+    GREATEST(
+        COALESCE(ll.last_llm_at, '-infinity'::timestamptz),
+        COALESCE(lm.last_msg_at, '-infinity'::timestamptz)
+    ) AS last_activity_at
+FROM agent_sessions s
+LEFT JOIN latest_llm ll ON ll.session_id = s.id
+LEFT JOIN latest_msg lm ON lm.session_id = s.id
+WHERE s.status = 'running'
+  AND s.issue_number IS NOT NULL
+  AND GREATEST(
+        COALESCE(ll.last_llm_at, '-infinity'::timestamptz),
+        COALESCE(lm.last_msg_at, '-infinity'::timestamptz)
+      ) < NOW() - $1::INTERVAL
+ORDER BY last_activity_at ASC
+LIMIT $2
+`
+	rows, err := r.pool.Query(ctx, staleRunningSessionsSQL, pgtype.Interval{Microseconds: threshold.Microseconds(), Valid: true}, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*domain.StaleRunningSession, 0, limit)
+	for rows.Next() {
+		var row runnerdb.AgentSession
+		var lastActivityTS pgtype.Timestamptz
+		if err := rows.Scan(
+			&row.ID,
+			&row.RunnerID,
+			&row.RepoID,
+			&row.IssueNumber,
+			&row.Status,
+			&row.Role,
+			&row.Model,
+			&row.AgentImage,
+			&row.WorkingBranch,
+			&row.BaseBranch,
+			&row.HostAddendum,
+			&row.Env,
+			&row.SessionTokenPrefix,
+			&row.SessionTokenHash,
+			&row.SessionTokenSealed,
+			&row.SessionTokenRevokedAt,
+			&row.ExitCode,
+			&row.ErrorMessage,
+			&row.CreatedAt,
+			&row.ClaimedAt,
+			&row.StartedAt,
+			&row.EndedAt,
+			&row.RepoSha,
+			&row.RoleKey,
+			&row.CauseKind,
+			&row.CauseID,
+			&row.RoleConfig,
+			&row.ContainerID,
+			&row.ContainerLastUsedAt,
+			&row.ContainerCleanupPending,
+			&row.ContainerStopPending,
+			&row.ContainerStoppedAt,
+			&row.RunningJobs,
+			&row.CreatedByActorID,
+			&row.ActorID,
+			&lastActivityTS,
+		); err != nil {
+			return nil, err
+		}
+		sess := r.sessionFromRow(ctx, row)
+		var lastActivity *time.Time
+		if lastActivityTS.Valid {
+			t := lastActivityTS.Time
+			lastActivity = &t
+		}
+		out = append(out, &domain.StaleRunningSession{
+			Session:        sess,
+			LastActivityAt: lastActivity,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListStaleTerminalSessions returns failed/cancelled issue-scoped sessions
+// whose last observable activity is older than threshold. "Observable
+// activity" is the max of latest LLM usage timestamp and latest
+// agent_session_message timestamp; either source is enough to prove the row
+// was still progressing recently.
+func (r *PostgresRepo) ListStaleTerminalSessions(ctx context.Context, threshold time.Duration, limit int) ([]*domain.StaleTerminalSession, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	const staleTerminalSessionsSQL = `
+WITH latest_llm AS (
+    SELECT session_id, MAX(created_at) AS last_llm_at
+    FROM llm_usage_log
+    GROUP BY session_id
+),
+latest_msg AS (
+    SELECT session_id, MAX(created_at) AS last_msg_at
+    FROM agent_session_messages
+    GROUP BY session_id
+)
+SELECT
+    s.id, s.runner_id, s.repo_id, s.issue_number, s.status, s.role, s.model,
+    s.agent_image, s.working_branch, s.base_branch, s.host_addendum, s.env,
+    s.session_token_prefix, s.session_token_hash, s.session_token_sealed,
+    s.session_token_revoked_at, s.exit_code, s.error_message, s.created_at,
+    s.claimed_at, s.started_at, s.ended_at, s.repo_sha, s.role_key,
+    s.cause_kind, s.cause_id, s.role_config, s.container_id,
+    s.container_last_used_at, s.container_cleanup_pending,
+    s.container_stop_pending, s.container_stopped_at, s.running_jobs,
+    s.created_by_actor_id, s.actor_id,
+    GREATEST(
+        COALESCE(ll.last_llm_at, '-infinity'::timestamptz),
+        COALESCE(lm.last_msg_at, '-infinity'::timestamptz)
+    ) AS last_activity_at
+FROM agent_sessions s
+LEFT JOIN latest_llm ll ON ll.session_id = s.id
+LEFT JOIN latest_msg lm ON lm.session_id = s.id
+WHERE s.status IN ('failed', 'cancelled')
+  AND s.issue_number IS NOT NULL
+  AND GREATEST(
+        COALESCE(ll.last_llm_at, '-infinity'::timestamptz),
+        COALESCE(lm.last_msg_at, '-infinity'::timestamptz)
+      ) < NOW() - $1::INTERVAL
+ORDER BY last_activity_at ASC
+LIMIT $2
+`
+	rows, err := r.pool.Query(ctx, staleTerminalSessionsSQL, pgtype.Interval{Microseconds: threshold.Microseconds(), Valid: true}, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]*domain.StaleTerminalSession, 0, limit)
+	for rows.Next() {
+		var row runnerdb.AgentSession
+		var lastActivityTS pgtype.Timestamptz
+		if err := rows.Scan(
+			&row.ID,
+			&row.RunnerID,
+			&row.RepoID,
+			&row.IssueNumber,
+			&row.Status,
+			&row.Role,
+			&row.Model,
+			&row.AgentImage,
+			&row.WorkingBranch,
+			&row.BaseBranch,
+			&row.HostAddendum,
+			&row.Env,
+			&row.SessionTokenPrefix,
+			&row.SessionTokenHash,
+			&row.SessionTokenSealed,
+			&row.SessionTokenRevokedAt,
+			&row.ExitCode,
+			&row.ErrorMessage,
+			&row.CreatedAt,
+			&row.ClaimedAt,
+			&row.StartedAt,
+			&row.EndedAt,
+			&row.RepoSha,
+			&row.RoleKey,
+			&row.CauseKind,
+			&row.CauseID,
+			&row.RoleConfig,
+			&row.ContainerID,
+			&row.ContainerLastUsedAt,
+			&row.ContainerCleanupPending,
+			&row.ContainerStopPending,
+			&row.ContainerStoppedAt,
+			&row.RunningJobs,
+			&row.CreatedByActorID,
+			&row.ActorID,
+			&lastActivityTS,
+		); err != nil {
+			return nil, err
+		}
+		sess := r.sessionFromRow(ctx, row)
+		var lastActivity *time.Time
+		if lastActivityTS.Valid {
+			t := lastActivityTS.Time
+			lastActivity = &t
+		}
+		out = append(out, &domain.StaleTerminalSession{
+			Session:        sess,
+			LastActivityAt: lastActivity,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func applyRecentSessionFilter(roleKey, status *pgtype.Text, repoID *pgtype.Int8, since *pgtype.Timestamptz, filter domain.SessionFilter) {
 	if filter.RoleKey != nil {
 		*roleKey = pgtype.Text{String: *filter.RoleKey, Valid: true}
@@ -467,7 +690,14 @@ func (r *PostgresRepo) ClaimNextSession(ctx context.Context, runnerID int64) (*d
 	defer tx.Rollback(ctx)
 	qtx := r.q.WithTx(tx)
 
-	row, err := qtx.ClaimNextSessionLock(ctx, pgtype.Int8{Int64: runnerID, Valid: true})
+	rr, err := qtx.GetRunnerByID(ctx, runnerID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrRunnerNotFound
+		}
+		return nil, err
+	}
+	row, err := claimNextEligibleSession(ctx, tx, rr)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNoPendingSession
@@ -492,6 +722,74 @@ func (r *PostgresRepo) ClaimNextSession(ctx context.Context, runnerID int64) (*d
 	pinned := runnerID
 	s.RunnerID = &pinned
 	return s, nil
+}
+
+const claimNextEligibleSessionSQL = `
+SELECT s.*
+FROM agent_sessions s
+JOIN runners r ON r.id = $1
+LEFT JOIN repos repo ON repo.id = s.repo_id
+WHERE s.status = 'pending'
+  AND (
+    s.runner_id = $1
+    OR (
+      s.runner_id IS NULL
+      AND (
+        r.visibility = 'platform'
+        OR (
+          r.visibility = 'user'
+          AND r.owner_user_id IS NOT NULL
+          AND repo.owner_user_id = r.owner_user_id
+        )
+      )
+    )
+  )
+ORDER BY s.created_at ASC, s.id ASC
+FOR UPDATE OF s SKIP LOCKED
+LIMIT 1
+`
+
+func claimNextEligibleSession(ctx context.Context, tx pgx.Tx, runner runnerdb.Runner) (runnerdb.AgentSession, error) {
+	row := tx.QueryRow(ctx, claimNextEligibleSessionSQL, runner.ID)
+	var out runnerdb.AgentSession
+	err := row.Scan(
+		&out.ID,
+		&out.RunnerID,
+		&out.RepoID,
+		&out.IssueNumber,
+		&out.Status,
+		&out.Role,
+		&out.Model,
+		&out.AgentImage,
+		&out.WorkingBranch,
+		&out.BaseBranch,
+		&out.HostAddendum,
+		&out.Env,
+		&out.SessionTokenPrefix,
+		&out.SessionTokenHash,
+		&out.SessionTokenSealed,
+		&out.SessionTokenRevokedAt,
+		&out.ExitCode,
+		&out.ErrorMessage,
+		&out.CreatedAt,
+		&out.ClaimedAt,
+		&out.StartedAt,
+		&out.EndedAt,
+		&out.RepoSha,
+		&out.RoleKey,
+		&out.CauseKind,
+		&out.CauseID,
+		&out.RoleConfig,
+		&out.ContainerID,
+		&out.ContainerLastUsedAt,
+		&out.ContainerCleanupPending,
+		&out.ContainerStopPending,
+		&out.ContainerStoppedAt,
+		&out.RunningJobs,
+		&out.CreatedByActorID,
+		&out.ActorID,
+	)
+	return out, err
 }
 
 func (r *PostgresRepo) MarkSessionRunning(ctx context.Context, id int64) error {

@@ -41,12 +41,11 @@ services:
       redis:
         condition: service_healthy
     ports:
-      - "127.0.0.1:18081:8080"
+      - "18081:8080"
     volumes:
       - ./.runtime/app:/data
     environment:
       API_SERVER_ADDR: ":8080"
-      API_SERVER_URL: "http://host.docker.internal:18081"
       API_DATABASE_DSN: "postgres://hangrix:hangrix@postgres:5432/hangrix?sslmode=disable"
       API_REDIS_ADDR: "redis:6379"
       API_STORAGE_REPOS_PATH: "/data/repos"

@@ -39,11 +39,11 @@ import (
 	gitdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/git/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/issue/domain"
 	issueservice "github.com/hangrix/hangrix/apps/hangrix/internal/modules/issue/service"
-	skilldomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/skill/domain"
 	orgdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/org/domain"
 	planenginedomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/plan_engine/domain"
 	repodomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/domain"
 	repoinfra "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/infra"
+	skilldomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/skill/domain"
 	userdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/user/domain"
 	workflowdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/workflow/domain"
 	workflowservice "github.com/hangrix/hangrix/apps/hangrix/internal/modules/workflow/service"
@@ -543,8 +543,8 @@ type createReq struct {
 	// parent's working line. Top-level issues use the repo default branch
 	// as their base — the client never picks the branch explicitly (M4
 	// design: base is implicit context, not a user choice).
-	ParentNumber int64            `json:"parent_number,omitempty"`
-	Skill        *createReqSkill  `json:"skill,omitempty"`
+	ParentNumber int64           `json:"parent_number,omitempty"`
+	Skill        *createReqSkill `json:"skill,omitempty"`
 }
 
 type createReqSkill struct {
@@ -867,6 +867,7 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 					IssueID:                 ind.IssueID,
 					HasPendingQuestionnaire: ind.HasPendingQuestionnaire,
 					HasAgentMention:         ind.HasAgentMention,
+					HasQueuedAgentRun:       ind.HasQueuedAgentRun,
 				}
 			}
 		}

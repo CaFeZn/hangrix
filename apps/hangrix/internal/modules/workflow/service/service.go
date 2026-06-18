@@ -124,14 +124,16 @@ func (s *Service) GetHostContainer(ctx context.Context, repo Ref) (*agentsconfig
 		return nil, fmt.Errorf("resolve repo path: %w", err)
 	}
 
-	raw, ok := readBlob(ctx, fsPath, repo.DefaultBranch, ".hangrix/agents.yml")
-	if !ok {
-		return nil, fmt.Errorf("agents.yml not found in repo %s/%s", repo.OwnerName, repo.Name)
-	}
-
-	host, err := agentsconfig.ParseHostConfig(raw)
+	host, err := agentsconfig.LoadHostConfig(&agentsconfig.GitFileProvider{
+		Ctx:        ctx,
+		RepoFSPath: fsPath,
+		Ref:        repo.DefaultBranch,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("parse agents.yml: %w", err)
+		return nil, fmt.Errorf("load host config: %w", err)
+	}
+	if host == nil {
+		return nil, fmt.Errorf("host config is empty for repo %s/%s", repo.OwnerName, repo.Name)
 	}
 
 	// Exactly one of Image or Build is guaranteed by agentsconfig validation.
@@ -1180,6 +1182,7 @@ func (s *Service) StreamJobLog(ctx context.Context, jobRunID int64, w io.Writer)
 	}
 	return nil
 }
+
 // AppendLog appends a log line to a job run. stepID is the currently-executing
 // step key, or nil when the line is emitted between steps (system logs, etc.).
 func (s *Service) AppendLog(ctx context.Context, jobRunID int64, stream domain.LogStream, line string, stepID *string) error {

@@ -63,6 +63,12 @@ type gitCaller struct {
 	workflowRepoID int64
 }
 
+// postReceiveObserverTimeout bounds one push observer's detached
+// best-effort work after receive-pack returns. Observers used to share a
+// single 10s context, so a slow contribution sync could exhaust the entire
+// budget and starve the workflow observer / reviewer wake-up fanout.
+const postReceiveObserverTimeout = 30 * time.Second
+
 func (g *gitCaller) hasWriteScope() bool {
 	switch g.authMethod {
 	case "pat":
@@ -354,15 +360,16 @@ func (h *Handler) runReceivePackWithSideband(w http.ResponseWriter, r *http.Requ
 		log.Printf("repo: receive-pack error for repo %d: %v (stdout=%d bytes)", repo.ID, err, stdout.Len())
 	}
 
-	// PostReceive observers run after the subprocess returns. Use a detached
-	// context so a client disconnect doesn't immediately cancel the observer
-	// DB writes.
-	postCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// PostReceive observers run after the subprocess returns. Use detached
+	// per-observer contexts so a client disconnect doesn't cancel the
+	// side effects, and one slow observer doesn't consume the entire budget
+	// for every observer behind it.
 	pusher := pusherFromCaller(caller)
 	var allContribs []domain.PostReceiveContrib
 	for _, obs := range h.observers {
-		contribs, _ := obs.PostReceive(postCtx, repo, fsPath, pusher, refUpdates)
+		obsCtx, cancel := context.WithTimeout(context.Background(), postReceiveObserverTimeout)
+		contribs, _ := obs.PostReceive(obsCtx, repo, fsPath, pusher, refUpdates)
+		cancel()
 		allContribs = append(allContribs, contribs...)
 	}
 

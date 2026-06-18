@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { AlertTriangle, ChevronDown, ExternalLink, MoreHorizontal, Search, StopCircle, Trash2 } from 'lucide-vue-next'
+import { AlertTriangle, ChevronDown, ExternalLink, MoreHorizontal, RefreshCw, Search, StopCircle, Trash2 } from 'lucide-vue-next'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -25,6 +25,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 import { useLifecycleSettings } from '~/composables/useLifecycleSettings'
+import { useAdminRefresh } from '~/composables/useAdminRefresh'
 import type { AdminAgentSession, AdminAgentSessionListResp, ContainerState } from '~/types/agent-session'
 import { deriveContainerState } from '~/types/agent-session'
 import { LIFECYCLE_KEYS } from '~/types/platform-settings'
@@ -71,6 +72,7 @@ const filterRepoID = ref<string>('')
 const filterSince = ref<string>('')
 const pageSize = ref<number>(50)
 const offset = ref<number>(0)
+const { refreshing, refreshNow } = useAdminRefresh(load, { intervalMs: 10_000 })
 
 const STATUSES = ['pending', 'claimed', 'running', 'idle', 'succeeded', 'failed', 'cancelled', 'archived'] as const
 
@@ -154,12 +156,12 @@ async function load() {
 
 function applyFilters() {
   offset.value = 0
-  load()
+  void refreshNow()
 }
 
 function onOffsetChange(v: number) {
   offset.value = v
-  load()
+  void refreshNow()
 }
 
 // ── Container actions ─────────────────────────────────────────────────
@@ -191,15 +193,21 @@ async function removeContainer(row: AdminAgentSession) {
 
 onMounted(() => {
   loadLifecycle()
-  load()
+  void refreshNow()
 })
 </script>
 
 <template>
   <div class="space-y-6">
-    <header class="space-y-1">
-      <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.agentSessions.title') }}</h1>
-      <p class="text-sm text-muted-foreground">{{ t('admin.agentSessions.subtitle') }}</p>
+    <header class="flex flex-wrap items-start justify-between gap-4">
+      <div class="space-y-1">
+        <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.agentSessions.title') }}</h1>
+        <p class="text-sm text-muted-foreground">{{ t('admin.agentSessions.subtitle') }}</p>
+      </div>
+      <Button variant="outline" :disabled="refreshing || loading" @click="refreshNow">
+        <RefreshCw class="size-4" :class="{ 'animate-spin': refreshing }" />
+        {{ t('repo.hangrix.refresh') }}
+      </Button>
     </header>
 
     <div class="grid gap-4 md:grid-cols-3">

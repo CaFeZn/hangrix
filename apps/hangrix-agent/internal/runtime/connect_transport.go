@@ -18,6 +18,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -47,6 +48,7 @@ type connectTransport struct {
 	streamCancel context.CancelFunc
 	frameQ       chan *agentv1.StreamInputsResponse
 	streamErr    chan error
+	streamOpened bool
 
 	// lastFrameAt is the wall-clock time of the most recent frame
 	// StreamFrame returned. Drives the 5-minute idle-grace window —
@@ -136,17 +138,18 @@ func (t *connectTransport) FetchHistory(ctx context.Context) ([]*agentv1.History
 // elapses or the server cleanly closes the stream; the pump goroutine
 // in Loop.Run treats both as "wake done".
 //
-// keepAlive override: while the runtime reports pending local async
-// work (sleep timer, background bash task), the idle-grace window is
-// held open — otherwise a sleep(5min) on a quiet stream would EOF the
-// wake before the timer ever fired, and the agent process would exit
-// with the completion notification still queued behind it.
+// keepAlive override: while the runtime reports either pending local
+// async work (sleep timer, background bash task) OR an in-flight
+// LLM/tool turn, the idle-grace window is held open. Without this, a
+// quiet stream can EOF based on the timestamp of the last inbound
+// server frame even though the agent is still actively working
+// locally; a late sleep/background-task schedule would then never get a
+// chance to wake the model.
 func (t *connectTransport) StreamFrame(ctx context.Context) (*agentv1.StreamInputsResponse, error) {
-	if err := t.ensureStream(); err != nil {
-		return nil, err
-	}
-
 	for {
+		if err := t.ensureStream(); err != nil {
+			return nil, err
+		}
 		holdingOpen := t.keepAlive != nil && t.keepAlive()
 		if holdingOpen {
 			// Refresh so the EOF check below never trips while local
@@ -158,6 +161,10 @@ func (t *connectTransport) StreamFrame(ctx context.Context) (*agentv1.StreamInpu
 
 		timeout := idleGrace - time.Since(t.lastFrameAt)
 		if timeout <= 0 {
+			if t.keepAlive != nil && t.keepAlive() {
+				t.lastFrameAt = time.Now()
+				continue
+			}
 			return nil, io.EOF
 		}
 		// Re-check the predicate periodically so a true→false flip
@@ -182,23 +189,52 @@ func (t *connectTransport) StreamFrame(ctx context.Context) (*agentv1.StreamInpu
 			t.lastFrameAt = time.Now()
 			return resp, nil
 		case err, ok := <-t.streamErr:
+			if resp, ok := takeBufferedFrame(t.frameQ); ok {
+				t.lastFrameAt = time.Now()
+				return resp, nil
+			}
 			// Server closed the stream. Clean close (Err()==nil) becomes
 			// io.EOF so the loop exits cleanly; a real error propagates so
 			// the session is marked failed.
 			if !ok || err == nil {
 				return nil, io.EOF
 			}
+			if ctx.Err() == nil && errors.Is(err, context.Canceled) {
+				t.resetStream()
+				continue
+			}
+			if isRetryableTransportError(err) && ctx.Err() == nil {
+				t.resetStream()
+				continue
+			}
 			return nil, fmt.Errorf("connect_transport: stream err: %w", err)
 		case <-time.After(timeout):
-			if holdingOpen {
-				// Predicate was true at the top of this loop; re-check
-				// it on the next iteration before letting idleGrace fire.
+			if t.keepAlive != nil && t.keepAlive() {
+				// Re-check the CURRENT predicate, not the value captured
+				// at select-entry time. A sleep/background job can be
+				// scheduled after this iteration computed holdingOpen=false
+				// but before the timeout actually fires.
 				continue
 			}
 			// Idle grace elapsed. Return io.EOF; Loop.Run's defer Shutdown
 			// will fire MarkIdle and the relay's stream gets cancelled.
 			return nil, io.EOF
 		}
+	}
+}
+
+func takeBufferedFrame(ch chan *agentv1.StreamInputsResponse) (*agentv1.StreamInputsResponse, bool) {
+	if ch == nil {
+		return nil, false
+	}
+	select {
+	case resp, ok := <-ch:
+		if !ok {
+			return nil, false
+		}
+		return resp, true
+	default:
+		return nil, false
 	}
 }
 
@@ -236,12 +272,13 @@ func (t *connectTransport) ensureStream() error {
 	t.stream = stream
 	t.streamCtx = ctx
 	t.streamCancel = cancel
+	t.streamOpened = true
 	// Buffer at 16 absorbs short bursts without blocking the wire
 	// reader; in steady state the loop drains as fast as the server
 	// pushes so the buffer rarely fills.
 	t.frameQ = make(chan *agentv1.StreamInputsResponse, 16)
 	t.streamErr = make(chan error, 1)
-	go t.relay()
+	go t.relay(stream, ctx, t.frameQ, t.streamErr)
 	return nil
 }
 
@@ -249,19 +286,37 @@ func (t *connectTransport) ensureStream() error {
 // false (clean close or transport error). The final stream.Err() lands
 // on streamErr so StreamFrame can distinguish "wake done cleanly"
 // from "real failure".
-func (t *connectTransport) relay() {
-	defer close(t.frameQ)
-	defer close(t.streamErr)
-	for t.stream.Receive() {
+func (t *connectTransport) relay(
+	stream *connect.ServerStreamForClient[agentv1.StreamInputsResponse],
+	streamCtx context.Context,
+	frameQ chan *agentv1.StreamInputsResponse,
+	streamErr chan error,
+) {
+	defer close(frameQ)
+	defer close(streamErr)
+	for stream.Receive() {
 		select {
-		case t.frameQ <- t.stream.Msg():
-		case <-t.streamCtx.Done():
+		case frameQ <- stream.Msg():
+		case <-streamCtx.Done():
 			return
 		}
 	}
-	if err := t.stream.Err(); err != nil {
-		t.streamErr <- err
+	if err := stream.Err(); err != nil {
+		streamErr <- err
 	}
+}
+
+func (t *connectTransport) resetStream() {
+	t.streamMu.Lock()
+	defer t.streamMu.Unlock()
+	if t.streamCancel != nil {
+		t.streamCancel()
+	}
+	t.stream = nil
+	t.streamCtx = nil
+	t.streamCancel = nil
+	t.frameQ = nil
+	t.streamErr = nil
 }
 
 // ---- frameSink ----
@@ -270,16 +325,18 @@ func (t *connectTransport) relay() {
 // funnels through. Wraps the proto envelope in a unary AppendMessage
 // RPC with a 30s timeout.
 func (t *connectTransport) appendOutbound(frame *agentv1.Outbound) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	_, err := t.client.AppendMessage(ctx, connect.NewRequest(&agentv1.AppendMessageRequest{
-		SessionId: t.sessionID,
-		Frame:     frame,
-	}))
-	if err != nil {
-		return fmt.Errorf("connect_transport: append message: %w", err)
-	}
-	return nil
+	return retryCriticalTransportCall(context.Background(), func(parent context.Context) error {
+		ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+		defer cancel()
+		_, err := t.client.AppendMessage(ctx, connect.NewRequest(&agentv1.AppendMessageRequest{
+			SessionId: t.sessionID,
+			Frame:     frame,
+		}))
+		if err != nil {
+			return fmt.Errorf("connect_transport: append message: %w", err)
+		}
+		return nil
+	})
 }
 
 func (t *connectTransport) Status(phase string) error {
@@ -334,16 +391,22 @@ func (t *connectTransport) Suspended(expectedExitAt string) error {
 // Shutdown POSTs MarkIdle once and cancels the stream context. Called
 // from Loop.Run's defer, after which the agent process exits.
 func (t *connectTransport) Shutdown() error {
-	if t.streamCancel != nil {
-		t.streamCancel()
+	t.resetStream()
+	if !t.streamOpened {
+		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	_, err := t.client.MarkIdle(ctx, connect.NewRequest(&agentv1.MarkIdleRequest{
-		SessionId: t.sessionID,
-	}))
-	if err != nil {
-		return fmt.Errorf("connect_transport: mark idle: %w", err)
-	}
-	return nil
+	return retryCriticalTransportCall(context.Background(), func(parent context.Context) error {
+		ctx, cancel := context.WithTimeout(parent, 10*time.Second)
+		defer cancel()
+		_, err := t.client.MarkIdle(ctx, connect.NewRequest(&agentv1.MarkIdleRequest{
+			SessionId: t.sessionID,
+		}))
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			return fmt.Errorf("connect_transport: mark idle: %w", err)
+		}
+		return nil
+	})
 }

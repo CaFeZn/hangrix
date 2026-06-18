@@ -147,6 +147,35 @@ WHERE (sqlc.narg('role_key')::TEXT   IS NULL OR role_key   = sqlc.narg('role_key
   AND (sqlc.narg('repo_id')::BIGINT  IS NULL OR repo_id    = sqlc.narg('repo_id')::BIGINT)
   AND (sqlc.narg('since')::TIMESTAMPTZ IS NULL OR created_at >= sqlc.narg('since')::TIMESTAMPTZ);
 
+-- name: ListStaleRunningSessions :many
+WITH latest_llm AS (
+    SELECT session_id, MAX(created_at) AS last_llm_at
+    FROM llm_usage_log
+    GROUP BY session_id
+),
+latest_msg AS (
+    SELECT session_id, MAX(created_at) AS last_msg_at
+    FROM agent_session_messages
+    GROUP BY session_id
+)
+SELECT
+    s.*,
+    GREATEST(
+        COALESCE(ll.last_llm_at, '-infinity'::timestamptz),
+        COALESCE(lm.last_msg_at, '-infinity'::timestamptz)
+    ) AS last_activity_at
+FROM agent_sessions s
+LEFT JOIN latest_llm ll ON ll.session_id = s.id
+LEFT JOIN latest_msg lm ON lm.session_id = s.id
+WHERE s.status = 'running'
+  AND s.issue_number IS NOT NULL
+  AND GREATEST(
+        COALESCE(ll.last_llm_at, '-infinity'::timestamptz),
+        COALESCE(lm.last_msg_at, '-infinity'::timestamptz)
+      ) < NOW() - sqlc.arg('threshold')::INTERVAL
+ORDER BY last_activity_at ASC
+LIMIT sqlc.arg('lim');
+
 -- name: ArchiveSessionsByIssue :execrows
 -- Flip every non-archived session on this (repo, issue) to archived.
 -- Driven by issue.closed / issue.merged: the parent issue is the only

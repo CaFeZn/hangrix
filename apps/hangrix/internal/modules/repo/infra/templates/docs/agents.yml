@@ -1,0 +1,78 @@
+version: 1
+
+container:
+  image: node:22-bookworm
+  env:
+    NODE_ENV: development
+  volumes:
+    - { name: npm-cache, mount: /root/.npm }
+
+tools:
+  all: ["*"]
+  worker:
+    - issue_read
+    - issue_read_by_number
+    - issue_comment_read
+    - issue_comment
+    - issue_comment_cross
+    - issue_create
+    - issue_edit
+    - issue_mergeable
+    - issue_todo_list
+    - issue_todo_update
+    - issue_attachment_upload
+    - issue_children
+    - issue_checks
+    - contribution_list
+    - contribution_read
+    - contribution_set_meta
+    - contribution_close
+    - roster_list
+  reviewer:
+    - issue_read
+    - issue_read_by_number
+    - issue_comment_read
+    - issue_comment
+    - issue_review_vote
+    - issue_mergeable
+    - issue_children
+    - issue_checks
+    - contribution_list
+    - contribution_read
+    - roster_list
+  fast:
+    - issue_read
+    - issue_read_by_number
+    - issue_comment_read
+    - issue_comment
+    - issue_comment_cross
+    - issue_create
+    - issue_edit
+    - issue_mergeable
+    - issue_todo_list
+    - issue_todo_update
+    - issue_attachment_upload
+    - issue_children
+    - issue_checks
+    - contribution_list
+    - contribution_read
+    - contribution_set_meta
+    - contribution_close
+    - roster_list
+
+reviewers:
+  rules:
+    - paths:
+        - "docs/**"
+        - "src/**"
+        - "static/**"
+        - "i18n/**"
+        - ".github/workflows/**"
+        - "docusaurus.config.js"
+        - "sidebars.js"
+        - "package.json"
+        - "package-lock.json"
+        - "babel.config.js"
+        - "README.md"
+      reviewers: [web-reviewer]
+  fallback: [web-reviewer]

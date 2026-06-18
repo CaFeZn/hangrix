@@ -42,9 +42,11 @@ import (
 // of forty. *infra.PostgresRepo satisfies it via the wider domain.Repo
 // it already implements.
 type agentConnectRepo interface {
+	GetSessionByID(ctx context.Context, id int64) (*domain.AgentSession, error)
 	ListMessages(ctx context.Context, sessionID int64) ([]*domain.Message, error)
 	AppendMessage(ctx context.Context, m *domain.Message) (*domain.Message, error)
 	ClaimPendingInputs(ctx context.Context, sessionID int64, limit int) ([]*domain.SessionInput, error)
+	MarkSessionRunning(ctx context.Context, id int64) error
 	MarkSessionIdle(ctx context.Context, id int64, exitCode *int32) error
 }
 
@@ -182,6 +184,19 @@ func (h *AgentConnectHandler) resolveSession(ctx context.Context, requestedID in
 	return sess, nil
 }
 
+func (h *AgentConnectHandler) ensureSessionRunning(ctx context.Context, sess *domain.AgentSession) error {
+	if sess == nil {
+		return nil
+	}
+	switch sess.Status {
+	case domain.SessionStatusPending, domain.SessionStatusClaimed, domain.SessionStatusRunning:
+		if err := h.repo.MarkSessionRunning(ctx, sess.ID); err != nil && !errors.Is(err, domain.ErrSessionStateInvalid) {
+			return connect.NewError(connect.CodeInternal, err)
+		}
+	}
+	return nil
+}
+
 // ---- RPC implementations ----
 
 // streamPollTick is the wait between empty-queue polls inside
@@ -203,6 +218,9 @@ func (h *AgentConnectHandler) FetchHistory(
 	if err != nil {
 		return nil, err
 	}
+	if err := h.ensureSessionRunning(ctx, sess); err != nil {
+		return nil, err
+	}
 	rows, err := h.repo.ListMessages(ctx, sess.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
@@ -221,6 +239,7 @@ func (h *AgentConnectHandler) FetchHistory(
 	// trim.
 	items = trimTrailingEventItems(items)
 	items = normalizeInterruptedToolResultChains(items)
+	items = dropIncompleteToolCallChainsProto(items)
 	items = trimTrailingDanglingToolCallsProto(items)
 	return connect.NewResponse(&agentv1.FetchHistoryResponse{Messages: items}), nil
 }
@@ -346,6 +365,53 @@ func normalizeInterruptedToolResultChains(items []*agentv1.HistoryItem) []*agent
 	return out
 }
 
+// dropIncompleteToolCallChainsProto removes any assistant(tool_calls=...)
+// segment whose tool results never fully materialized in persisted history.
+// This is stricter than trimTrailingDanglingToolCallsProto: it also handles
+// interrupted chains that are no longer trailing because later wakes appended
+// new event/message items. Without this pass, upstreams can reject replay with
+// tool_output_mismatch when the assistant history still references call IDs
+// that no longer have matching tool results.
+func dropIncompleteToolCallChainsProto(items []*agentv1.HistoryItem) []*agentv1.HistoryItem {
+	if len(items) == 0 {
+		return items
+	}
+
+	resultByCallID := make(map[string]bool)
+	for _, it := range items {
+		if it.GetRole() == "tool" && it.GetToolCallId() != "" {
+			resultByCallID[it.GetToolCallId()] = true
+		}
+	}
+
+	keptAssistantCallIDs := make(map[string]bool)
+	out := make([]*agentv1.HistoryItem, 0, len(items))
+	for _, it := range items {
+		if it.GetRole() == "assistant" && len(it.GetToolCalls()) > 0 {
+			complete := true
+			for _, tc := range it.GetToolCalls() {
+				if tc.GetId() == "" || !resultByCallID[tc.GetId()] {
+					complete = false
+					break
+				}
+			}
+			if !complete {
+				continue
+			}
+			for _, tc := range it.GetToolCalls() {
+				if tc.GetId() != "" {
+					keptAssistantCallIDs[tc.GetId()] = true
+				}
+			}
+		}
+		if it.GetRole() == "tool" && it.GetToolCallId() != "" && !keptAssistantCallIDs[it.GetToolCallId()] {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
 func (h *AgentConnectHandler) StreamInputs(
 	ctx context.Context,
 	req *connect.Request[agentv1.StreamInputsRequest],
@@ -353,6 +419,9 @@ func (h *AgentConnectHandler) StreamInputs(
 ) error {
 	sess, err := h.resolveSession(ctx, req.Msg.GetSessionId())
 	if err != nil {
+		return err
+	}
+	if err := h.ensureSessionRunning(ctx, sess); err != nil {
 		return err
 	}
 	for {
@@ -403,6 +472,9 @@ func (h *AgentConnectHandler) AppendMessage(
 	if err != nil {
 		return nil, err
 	}
+	if err := h.ensureSessionRunning(ctx, sess); err != nil {
+		return nil, err
+	}
 	msg, err := outboundProtoToDomain(sess.ID, req.Msg.GetFrame())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -431,6 +503,17 @@ func (h *AgentConnectHandler) MarkIdle(
 	// exit code separately), so we always pass nil here.
 	if err := h.repo.MarkSessionIdle(ctx, sess.ID, nil); err != nil {
 		if errors.Is(err, domain.ErrSessionStateInvalid) {
+			current, getErr := h.repo.GetSessionByID(ctx, sess.ID)
+			if getErr == nil && current != nil {
+				switch current.Status {
+				case domain.SessionStatusIdle,
+					domain.SessionStatusSucceeded,
+					domain.SessionStatusFailed,
+					domain.SessionStatusCancelled,
+					domain.SessionStatusArchived:
+					return connect.NewResponse(&agentv1.MarkIdleResponse{}), nil
+				}
+			}
 			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("session not in a state that accepts idle"))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)

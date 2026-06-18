@@ -376,10 +376,15 @@ func (b *bashTool) ScheduleWithID(id string, d time.Duration, notification strin
 	b.timersMu.Lock()
 	b.timers[id] = &sleepTimer{
 		timer: time.AfterFunc(d, func() {
+			// Queue the completion notification BEFORE removing the timer
+			// from the running set. Otherwise HasRunningJobs can observe a
+			// transient 0 between delete(timers[id]) and notifyCh <- msg,
+			// letting the transport EOF the wake before the loop processes
+			// the buffered notification.
+			b.notify(notification)
 			b.timersMu.Lock()
 			delete(b.timers, id)
 			b.timersMu.Unlock()
-			b.notify(notification)
 		}),
 		msg: notification,
 	}

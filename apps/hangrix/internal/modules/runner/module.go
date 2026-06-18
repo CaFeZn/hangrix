@@ -52,6 +52,7 @@ func Module() *ioc.Module {
 		ToInterface(new(domain.EnrollValidator))
 
 	m.Provide(handler.NewAdminHandler).ToInterface(new(server.RouteProvider))
+	m.Provide(handler.NewUserHandler).ToInterface(new(server.RouteProvider))
 	m.Provide(handler.NewAgentHandler).ToInterface(new(server.RouteProvider))
 	// hangrix.agent.v1 typed Connect-Go surface mounted at
 	// /hangrix.agent.v1.AgentService/*. Auth: session-token bearer;

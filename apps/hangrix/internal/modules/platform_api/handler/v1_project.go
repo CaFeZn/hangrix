@@ -87,6 +87,37 @@ func v1LinkProjectIssue(api AgentAPI) http.HandlerFunc {
 	}
 }
 
+func v1CreateProjectIssue(api AgentAPI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p := GetActor(r)
+		if p == nil {
+			WriteError(w, http.StatusUnauthorized, "missing actor")
+			return
+		}
+		projectID, ok := parseProjectID(w, r)
+		if !ok {
+			return
+		}
+		var req struct {
+			RepoID  int64  `json:"repo_id"`
+			Title   string `json:"title"`
+			Body    string `json:"body"`
+			Kind    string `json:"kind"`
+			Summary string `json:"summary"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		result, err := api.CreateProjectIssue(r.Context(), p, projectID, req.RepoID, req.Title, req.Body, req.Kind, req.Summary)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		WriteCreated(w, result)
+	}
+}
+
 func v1CreateProjectRepoProposal(api AgentAPI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := GetActor(r)

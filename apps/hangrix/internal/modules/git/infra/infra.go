@@ -1836,6 +1836,135 @@ func (g *GoGit) EditAndCommit(path, branch, baseCommitSHA, filePath string, newC
 	return newCommitHash.String(), nil
 }
 
+// UpsertFilesAndCommit writes or replaces a set of files on the HEAD commit of
+// branch, creates one commit, and advances the branch ref using an atomic
+// compare-and-swap against baseCommitSHA.
+func (g *GoGit) UpsertFilesAndCommit(path, branch, baseCommitSHA string, files map[string][]byte, message string, author, committer domain.Signature) (string, error) {
+	if len(files) == 0 {
+		return "", fmt.Errorf("edit-many: no files supplied")
+	}
+	repo, err := openRepo(path)
+	if err != nil {
+		return "", err
+	}
+	st := repo.Storer
+
+	branchRef := plumbing.NewBranchReferenceName(branch)
+	ref, err := repo.Reference(branchRef, false)
+	if err != nil {
+		if errors.Is(err, plumbing.ErrReferenceNotFound) {
+			return "", domain.ErrRefNotFound
+		}
+		return "", fmt.Errorf("edit-many: resolve branch: %w", err)
+	}
+	baseHash, err := peelHashToCommit(repo, ref.Hash())
+	if err != nil {
+		return "", fmt.Errorf("edit-many: peel branch: %w", err)
+	}
+	if baseHash.String() != baseCommitSHA {
+		return "", domain.ErrRefChanged
+	}
+
+	baseCommit, err := repo.CommitObject(baseHash)
+	if err != nil {
+		return "", fmt.Errorf("edit-many: commit object: %w", err)
+	}
+
+	rootTree, err := baseCommit.Tree()
+	if err != nil {
+		return "", fmt.Errorf("edit-many: root tree: %w", err)
+	}
+
+	type pendingFile struct {
+		path  string
+		entry object.TreeEntry
+	}
+	pending := make([]pendingFile, 0, len(files))
+	for relPath, body := range files {
+		relPath = strings.Trim(relPath, "/")
+		if relPath == "" || strings.HasPrefix(relPath, "/") || strings.Contains(relPath, "..") {
+			return "", fmt.Errorf("edit-many: bad path %q", relPath)
+		}
+		blobObj := st.NewEncodedObject()
+		blobObj.SetType(plumbing.BlobObject)
+		blobObj.SetSize(int64(len(body)))
+		w, err := blobObj.Writer()
+		if err != nil {
+			return "", fmt.Errorf("edit-many: blob writer (%s): %w", relPath, err)
+		}
+		if _, err := w.Write(body); err != nil {
+			_ = w.Close()
+			return "", fmt.Errorf("edit-many: write blob (%s): %w", relPath, err)
+		}
+		if err := w.Close(); err != nil {
+			return "", fmt.Errorf("edit-many: close blob (%s): %w", relPath, err)
+		}
+		blobHash, err := st.SetEncodedObject(blobObj)
+		if err != nil {
+			return "", fmt.Errorf("edit-many: store blob (%s): %w", relPath, err)
+		}
+		segments := strings.Split(relPath, "/")
+		pending = append(pending, pendingFile{
+			path: relPath,
+			entry: object.TreeEntry{
+				Name: segments[len(segments)-1],
+				Mode: filemode.Regular,
+				Hash: blobHash,
+			},
+		})
+	}
+	sort.Slice(pending, func(i, j int) bool { return pending[i].path < pending[j].path })
+
+	currentRootHash := rootTree.Hash
+	for _, pf := range pending {
+		currentTree, err := repo.TreeObject(currentRootHash)
+		if err != nil {
+			return "", fmt.Errorf("edit-many: read tree %s: %w", currentRootHash.String(), err)
+		}
+		newRootHash, err := upsertTreeEntry(repo, currentTree, strings.Split(pf.path, "/"), pf.entry)
+		if err != nil {
+			return "", fmt.Errorf("edit-many: upsert %s: %w", pf.path, err)
+		}
+		currentRootHash = newRootHash
+	}
+
+	now := time.Now()
+	authSig := object.Signature{Name: author.Name, Email: author.Email, When: author.When}
+	if authSig.When.IsZero() {
+		authSig.When = now
+	}
+	commSig := object.Signature{Name: committer.Name, Email: committer.Email, When: committer.When}
+	if commSig.When.IsZero() {
+		commSig.When = now
+	}
+	commit := &object.Commit{
+		Author:       authSig,
+		Committer:    commSig,
+		Message:      message,
+		TreeHash:     currentRootHash,
+		ParentHashes: []plumbing.Hash{baseHash},
+	}
+	commitObj := st.NewEncodedObject()
+	if err := commit.Encode(commitObj); err != nil {
+		return "", fmt.Errorf("edit-many: encode commit: %w", err)
+	}
+	newCommitHash, err := st.SetEncodedObject(commitObj)
+	if err != nil {
+		return "", fmt.Errorf("edit-many: store commit: %w", err)
+	}
+
+	oldRef := plumbing.NewHashReference(branchRef, baseHash)
+	newRef := plumbing.NewHashReference(branchRef, newCommitHash)
+	if err := st.CheckAndSetReference(newRef, oldRef); err != nil {
+		if errors.Is(err, storage.ErrReferenceHasChanged) {
+			return "", domain.ErrRefChanged
+		}
+		return "", fmt.Errorf("edit-many: set branch ref: %w", err)
+	}
+
+	return newCommitHash.String(), nil
+}
+
 // replaceTreeEntry returns a new tree hash where the entry at path segments
 // (relative to tree) is replaced with newEntry. Intermediate directories are
 // rebuilt; all other entries are preserved unchanged.
@@ -1902,10 +2031,108 @@ func replaceTreeEntry(repo *git.Repository, tree *object.Tree, segments []string
 	return encodeAndStoreTree(st, newEntries)
 }
 
+// upsertTreeEntry returns a new tree hash where the entry at path segments is
+// created or replaced with newEntry. Missing intermediate directories are
+// materialized automatically.
+func upsertTreeEntry(repo *git.Repository, tree *object.Tree, segments []string, newEntry object.TreeEntry) (plumbing.Hash, error) {
+	st := repo.Storer
+	target := segments[0]
+
+	if len(segments) == 1 {
+		newEntries := make([]object.TreeEntry, 0, len(tree.Entries)+1)
+		found := false
+		for _, e := range tree.Entries {
+			if e.Name == target {
+				if e.Mode == filemode.Dir || e.Mode == filemode.Submodule {
+					return plumbing.ZeroHash, domain.ErrNotABlob
+				}
+				newEntries = append(newEntries, newEntry)
+				found = true
+			} else {
+				newEntries = append(newEntries, e)
+			}
+		}
+		if !found {
+			newEntries = append(newEntries, newEntry)
+		}
+		return encodeAndStoreTree(st, newEntries)
+	}
+
+	var subEntry *object.TreeEntry
+	for i := range tree.Entries {
+		if tree.Entries[i].Name == target {
+			subEntry = &tree.Entries[i]
+			break
+		}
+	}
+
+	var newSubHash plumbing.Hash
+	if subEntry == nil {
+		var err error
+		newSubHash, err = buildMissingTree(st, segments[1:], newEntry)
+		if err != nil {
+			return plumbing.ZeroHash, err
+		}
+		newEntries := append(append([]object.TreeEntry(nil), tree.Entries...), object.TreeEntry{
+			Name: target,
+			Mode: filemode.Dir,
+			Hash: newSubHash,
+		})
+		return encodeAndStoreTree(st, newEntries)
+	}
+	if subEntry.Mode != filemode.Dir {
+		return plumbing.ZeroHash, domain.ErrNotABlob
+	}
+
+	subTree, err := repo.TreeObject(subEntry.Hash)
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("read subtree %q: %w", target, err)
+	}
+	newSubHash, err = upsertTreeEntry(repo, subTree, segments[1:], newEntry)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+
+	newEntries := make([]object.TreeEntry, 0, len(tree.Entries))
+	for _, e := range tree.Entries {
+		if e.Name == target {
+			newEntries = append(newEntries, object.TreeEntry{
+				Name: target,
+				Mode: filemode.Dir,
+				Hash: newSubHash,
+			})
+		} else {
+			newEntries = append(newEntries, e)
+		}
+	}
+	return encodeAndStoreTree(st, newEntries)
+}
+
+func buildMissingTree(storer storage.Storer, segments []string, newEntry object.TreeEntry) (plumbing.Hash, error) {
+	if len(segments) == 1 {
+		return encodeAndStoreTree(storer, []object.TreeEntry{newEntry})
+	}
+	subHash, err := buildMissingTree(storer, segments[1:], newEntry)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+	return encodeAndStoreTree(storer, []object.TreeEntry{{
+		Name: segments[0],
+		Mode: filemode.Dir,
+		Hash: subHash,
+	}})
+}
+
 // encodeAndStoreTree writes a tree object from the given entries and returns its hash.
 func encodeAndStoreTree(storer storage.Storer, entries []object.TreeEntry) (plumbing.Hash, error) {
+	treeSortKey := func(e object.TreeEntry) string {
+		if e.Mode == filemode.Dir {
+			return e.Name + "/"
+		}
+		return e.Name
+	}
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Name < entries[j].Name
+		return treeSortKey(entries[i]) < treeSortKey(entries[j])
 	})
 	treeObj := storer.NewEncodedObject()
 	t := &object.Tree{Entries: entries}

@@ -592,10 +592,12 @@ func (c *Client) MarkCleanupDone(ctx context.Context, sessionID int64) error {
 // MarkWorkflowJobRunning signals the platform that the runner has claimed
 // this workflow job and is starting execution.
 func (c *Client) MarkWorkflowJobRunning(ctx context.Context, jobRunID int64) error {
-	_, err := c.rpc.MarkWorkflowJobRunning(ctx, connect.NewRequest(&runnerv1.MarkWorkflowJobRunningRequest{
-		JobRunId: jobRunID,
-	}))
-	return err
+	return retryCriticalRPC(ctx, func(callCtx context.Context) error {
+		_, err := c.rpc.MarkWorkflowJobRunning(callCtx, connect.NewRequest(&runnerv1.MarkWorkflowJobRunningRequest{
+			JobRunId: jobRunID,
+		}))
+		return err
+	})
 }
 
 // AppendWorkflowJobLog sends a single log line to the platform. Stream
@@ -622,13 +624,17 @@ type WorkflowJobTerminateRequest struct {
 // TerminateWorkflowJob reports the final status of a workflow job back
 // to the platform. Status must be "success", "failed", or "cancelled".
 func (c *Client) TerminateWorkflowJob(ctx context.Context, jobRunID int64, req WorkflowJobTerminateRequest) error {
-	_, err := c.rpc.TerminateWorkflowJob(ctx, connect.NewRequest(&runnerv1.TerminateWorkflowJobRequest{
-		JobRunId: jobRunID,
-		Status:   req.Status,
-		ExitCode: req.ExitCode,
-		Message:  req.Message,
-	}))
-	return err
+	retryCtx, cancel := detachedRetryContext(ctx, 2*time.Minute)
+	defer cancel()
+	return retryCriticalRPC(retryCtx, func(callCtx context.Context) error {
+		_, err := c.rpc.TerminateWorkflowJob(callCtx, connect.NewRequest(&runnerv1.TerminateWorkflowJobRequest{
+			JobRunId: jobRunID,
+			Status:   req.Status,
+			ExitCode: req.ExitCode,
+			Message:  req.Message,
+		}))
+		return err
+	})
 }
 
 // ---- workflow phase callbacks ----
@@ -657,22 +663,26 @@ type PhaseResponse struct {
 
 // RegisterWorkflowJobPhase creates or retrieves a phase row for a workflow job.
 func (c *Client) RegisterWorkflowJobPhase(ctx context.Context, jobRunID int64, req RegisterPhaseRequest) error {
-	_, err := c.rpc.RegisterWorkflowJobPhase(ctx, connect.NewRequest(&runnerv1.RegisterWorkflowJobPhaseRequest{
-		JobRunId:      jobRunID,
-		Phase:         req.Phase,
-		SequenceIndex: req.SequenceIndex,
-		ImageRef:      req.ImageRef,
-	}))
-	return err
+	return retryCriticalRPC(ctx, func(callCtx context.Context) error {
+		_, err := c.rpc.RegisterWorkflowJobPhase(callCtx, connect.NewRequest(&runnerv1.RegisterWorkflowJobPhaseRequest{
+			JobRunId:      jobRunID,
+			Phase:         req.Phase,
+			SequenceIndex: req.SequenceIndex,
+			ImageRef:      req.ImageRef,
+		}))
+		return err
+	})
 }
 
 // MarkWorkflowJobPhaseRunning signals the platform that a phase has started.
 func (c *Client) MarkWorkflowJobPhaseRunning(ctx context.Context, jobRunID int64, phase string) error {
-	_, err := c.rpc.MarkWorkflowJobPhaseRunning(ctx, connect.NewRequest(&runnerv1.MarkWorkflowJobPhaseRunningRequest{
-		JobRunId: jobRunID,
-		Phase:    phase,
-	}))
-	return err
+	return retryCriticalRPC(ctx, func(callCtx context.Context) error {
+		_, err := c.rpc.MarkWorkflowJobPhaseRunning(callCtx, connect.NewRequest(&runnerv1.MarkWorkflowJobPhaseRunningRequest{
+			JobRunId: jobRunID,
+			Phase:    phase,
+		}))
+		return err
+	})
 }
 
 // TerminatePhaseRequest reports the terminal state of a workflow job phase.
@@ -694,8 +704,12 @@ func (c *Client) TerminateWorkflowJobPhase(ctx context.Context, jobRunID int64, 
 		wireReq.ExitCode = *req.ExitCode
 		wireReq.HasExitCode = true
 	}
-	_, err := c.rpc.TerminateWorkflowJobPhase(ctx, connect.NewRequest(wireReq))
-	return err
+	retryCtx, cancel := detachedRetryContext(ctx, 2*time.Minute)
+	defer cancel()
+	return retryCriticalRPC(retryCtx, func(callCtx context.Context) error {
+		_, err := c.rpc.TerminateWorkflowJobPhase(callCtx, connect.NewRequest(wireReq))
+		return err
+	})
 }
 
 // ---- workflow step result reporting ----
@@ -711,15 +725,19 @@ type WorkflowStepResultRequest struct {
 // ReportWorkflowStepResult reports a single step's outcome and captured
 // outputs to the platform. Called after each step completes.
 func (c *Client) ReportWorkflowStepResult(ctx context.Context, jobRunID int64, req WorkflowStepResultRequest) error {
-	_, err := c.rpc.ReportWorkflowStepResult(ctx, connect.NewRequest(&runnerv1.ReportWorkflowStepResultRequest{
-		JobRunId:  jobRunID,
-		StepIndex: int32(req.StepIndex),
-		StepId:    req.StepID,
-		ExitCode:  req.ExitCode,
-		Outputs:   req.Outputs,
-		Masked:    req.Masked,
-	}))
-	return err
+	retryCtx, cancel := detachedRetryContext(ctx, 2*time.Minute)
+	defer cancel()
+	return retryCriticalRPC(retryCtx, func(callCtx context.Context) error {
+		_, err := c.rpc.ReportWorkflowStepResult(callCtx, connect.NewRequest(&runnerv1.ReportWorkflowStepResultRequest{
+			JobRunId:  jobRunID,
+			StepIndex: int32(req.StepIndex),
+			StepId:    req.StepID,
+			ExitCode:  req.ExitCode,
+			Outputs:   req.Outputs,
+			Masked:    req.Masked,
+		}))
+		return err
+	})
 }
 
 // ---- release API (called with workflow token, not agent token) ----

@@ -463,6 +463,16 @@ func TestOrchestratorVolumes(t *testing.T) {
 				{Name: "repo-6-mod-cache", Mount: "/go/pkg/mod"},
 			},
 		},
+		{
+			name: "absolute source path becomes bind mount",
+			vols: []client.Volume{
+				{Name: "/var/run/docker.sock", Mount: "/var/run/docker.sock"},
+			},
+			repoID: 6,
+			want: []orchestrator.Volume{
+				{Name: "/var/run/docker.sock", Mount: "/var/run/docker.sock", HostPath: "/var/run/docker.sock"},
+			},
+		},
 	}
 
 	for _, tt := range tests {

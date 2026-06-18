@@ -33,12 +33,53 @@ type FileProvider interface {
 	ListDir(dir string) ([]string, bool)
 }
 
+type mapFileProvider struct {
+	files map[string][]byte
+}
+
+func (p *mapFileProvider) ReadFile(path string) ([]byte, bool) {
+	b, ok := p.files[path]
+	return b, ok
+}
+
+func (p *mapFileProvider) ListDir(dir string) ([]string, bool) {
+	prefix := dir
+	if prefix != "" && prefix[len(prefix)-1] != '/' {
+		prefix += "/"
+	}
+	var out []string
+	for path := range p.files {
+		if len(path) <= len(prefix) || path[:len(prefix)] != prefix {
+			continue
+		}
+		rest := path[len(prefix):]
+		if strings.Contains(rest, "/") {
+			continue
+		}
+		out = append(out, path)
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
 // LoadHostConfig assembles the full host config from `.hangrix/agents.yml`
 // (team config + tool rules) plus every `.hangrix/agents/<role>.md` file
 // (one role each). Returns (nil, nil) when agents.yml is absent — a repo
 // with no agent team is a valid state. The returned config is normalized
 // by the caller via NormalizeHostConfig if defaults are needed.
 func LoadHostConfig(fp FileProvider) (*HostConfig, error) {
+	// Missing repo-owned `.hangrix` is not treated as a dead repo state:
+	// the loader falls back to the platform's built-in default team config
+	// without writing any files back into the repository.
+	if cfg, err := loadHostConfigFromProvider(fp); err != nil || cfg != nil {
+		return cfg, err
+	}
+	return loadHostConfigFromProvider(&mapFileProvider{files: fallbackDefaultFiles()})
+}
+
+func loadHostConfigFromProvider(fp FileProvider) (*HostConfig, error) {
 	body, ok := fp.ReadFile(HostConfigPath)
 	if !ok {
 		return nil, nil

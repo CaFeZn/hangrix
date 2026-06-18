@@ -5,10 +5,15 @@ ARG NODE_MAJOR=20
 ARG PNPM_VERSION=10.33.2
 ARG SQLC_VERSION=v1.30.0
 ARG GOOSE_VERSION=v3.27.0
+ARG DOCKER_CLI_VERSION=28.5.2
+ARG DOCKER_COMPOSE_VERSION=v2.40.3
+ARG AGENT_IMAGE_REV=dev
 ARG PG_MAJOR=17
 ARG S6_OVERLAY_VERSION=3.2.0.2
 ARG PLAYWRIGHT_VERSION=1.60.0
 ARG TARGETARCH
+
+LABEL org.hangrix.agent-image-rev=$AGENT_IMAGE_REV
 
 # Node + pnpm
 RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
@@ -16,6 +21,25 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
  && rm -rf /var/lib/apt/lists/* \
  && corepack enable \
  && corepack prepare pnpm@${PNPM_VERSION} --activate
+
+# Docker CLI + Compose plugin for local deployment workflows that talk to the
+# host daemon through /var/run/docker.sock.
+RUN <<'DOCKERCLI'
+set -eux
+case "${TARGETARCH:-$(dpkg --print-architecture)}" in
+  amd64) DOCKER_ARCH=x86_64; COMPOSE_ARCH=x86_64 ;;
+  arm64) DOCKER_ARCH=aarch64; COMPOSE_ARCH=aarch64 ;;
+  *) echo "unsupported arch: ${TARGETARCH:-$(dpkg --print-architecture)}"; exit 1 ;;
+esac
+curl -fsSL "https://download.docker.com/linux/static/stable/${DOCKER_ARCH}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz
+tar -xzf /tmp/docker.tgz -C /tmp
+install -m 0755 /tmp/docker/docker /usr/local/bin/docker
+install -d /usr/local/lib/docker/cli-plugins
+curl -fsSL "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+rm -rf /tmp/docker /tmp/docker.tgz
+DOCKERCLI
 
 # PostgreSQL ${PG_MAJOR} (pgdg apt repo) + Redis 7 (Debian 12 default) + procps.
 # Versions match docker-compose.yml so tests against the embedded DB

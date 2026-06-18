@@ -176,3 +176,18 @@ export interface CommitContentsResp {
   blob_path: string
 }
 
+export type HangrixTemplate = 'default' | 'docs'
+
+export interface HangrixBootstrapReq {
+  template?: HangrixTemplate
+  commit_message?: string
+}
+
+export interface HangrixBootstrapResp {
+  branch: string
+  commit: {
+    sha: string
+    message: string
+  }
+  files: string[]
+}

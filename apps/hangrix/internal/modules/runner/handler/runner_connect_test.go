@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/hangrix/hangrix/apps/hangrix/internal/config"
+	platformsettings "github.com/hangrix/hangrix/apps/hangrix/internal/modules/platform_settings/domain"
 	repodomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/runner/domain"
 	workflowdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/workflow/domain"
@@ -47,6 +48,26 @@ type stubRunnerRepo struct {
 	claimSessionErr  error
 	claimSessionRows *domain.AgentSession
 	markTerminalErr  error
+}
+
+type stubPlatformSettings struct {
+	boolValues map[string]bool
+	intValues  map[string]int
+}
+
+func (s *stubPlatformSettings) Get(context.Context, string) (string, bool, error) { return "", false, nil }
+func (s *stubPlatformSettings) GetDuration(context.Context, string) (time.Duration, error) {
+	return 0, nil
+}
+func (s *stubPlatformSettings) GetBool(_ context.Context, key string) (bool, error) {
+	return s.boolValues[key], nil
+}
+func (s *stubPlatformSettings) GetInt(_ context.Context, key string) (int, error) {
+	return s.intValues[key], nil
+}
+func (s *stubPlatformSettings) Set(context.Context, string, string, string) error { return nil }
+func (s *stubPlatformSettings) List(context.Context) ([]platformsettings.Setting, error) {
+	return nil, nil
 }
 
 type heartbeatCall struct {
@@ -222,7 +243,7 @@ func newRunnerConnectTestServer(
 	if err != nil {
 		t.Fatalf("cryptobox: %v", err)
 	}
-	h := newRunnerConnectHandlerForTest(repo, agentValidator, enrollValidator, box, cfg, nil, nil, workflow)
+	h := newRunnerConnectHandlerForTest(repo, agentValidator, enrollValidator, box, cfg, nil, nil, workflow, nil)
 	r := chi.NewRouter()
 	h.RegisterRoutes(r)
 	srv := httptest.NewServer(r)
@@ -386,7 +407,7 @@ func TestRunnerConnect_Enroll_FallsBackToRequestHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cryptobox: %v", err)
 	}
-	h := newRunnerConnectHandlerForTest(&stubRunnerRepo{}, &stubAgentValidator{}, enroll, box, cfg, nil, nil, stubWorkflow{})
+	h := newRunnerConnectHandlerForTest(&stubRunnerRepo{}, &stubAgentValidator{}, enroll, box, cfg, nil, nil, stubWorkflow{}, nil)
 	r := chi.NewRouter()
 	h.RegisterRoutes(r)
 	srv := httptest.NewServer(r)
@@ -611,7 +632,7 @@ func TestRunnerConnect_Tasks_LegacyClient_DualFill(t *testing.T) {
 		t.Fatalf("cryptobox: %v", err)
 	}
 
-	h := newRunnerConnectHandlerForTest(&stubRunnerRepo{}, auth, &stubEnrollValidator{}, box, cfg, stubVariableStore{}, repoStore, wf)
+	h := newRunnerConnectHandlerForTest(&stubRunnerRepo{}, auth, &stubEnrollValidator{}, box, cfg, stubVariableStore{}, repoStore, wf, nil)
 	r := chi.NewRouter()
 	h.RegisterRoutes(r)
 	srv := httptest.NewServer(r)
@@ -646,6 +667,29 @@ func TestRunnerConnect_Tasks_LegacyClient_DualFill(t *testing.T) {
 	// Both must represent the same workflow job.
 	if gotTask.GetWorkflowJob().GetJobRunId() != gotTasks[0].GetWorkflowJob().GetJobRunId() {
 		t.Error("Task and Tasks[0] should have the same workflow job")
+	}
+}
+
+func TestRunnerConnectMaxTasksPerPollUsesFirepowerLimit(t *testing.T) {
+	h := &RunnerConnectHandler{settings: &stubPlatformSettings{
+		boolValues: map[string]bool{
+			platformsettings.SettingFirepowerEnabled: true,
+		},
+		intValues: map[string]int{
+			platformsettings.SettingRunnerMaxTasksPerPoll:   64,
+			platformsettings.SettingFirepowerRunnerMaxTasks: 256,
+		},
+	}}
+	if got := h.maxTasksPerPoll(context.Background()); got != 256 {
+		t.Fatalf("maxTasksPerPoll = %d, want 256", got)
+	}
+
+	h.settings = &stubPlatformSettings{intValues: map[string]int{
+		platformsettings.SettingRunnerMaxTasksPerPoll:   64,
+		platformsettings.SettingFirepowerRunnerMaxTasks: 256,
+	}}
+	if got := h.maxTasksPerPoll(context.Background()); got != 64 {
+		t.Fatalf("maxTasksPerPoll disabled = %d, want 64", got)
 	}
 }
 

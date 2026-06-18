@@ -11,10 +11,10 @@ import (
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/agent_session/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/agent_session/handler"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/agent_session/service"
+	workflowdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/workflow/domain"
+	workflowsvc "github.com/hangrix/hangrix/apps/hangrix/internal/modules/workflow/service"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/server"
 	"github.com/hangrix/hangrix/pkg/ioc"
-
-	workflowsvc "github.com/hangrix/hangrix/apps/hangrix/internal/modules/workflow/service"
 )
 
 func Module() *ioc.Module {
@@ -47,7 +47,12 @@ func Module() *ioc.Module {
 	m.Provide(service.NewArchiver).ToInterface(new(domain.Archiver))
 	m.Provide(service.NewAuditor).ToInterface(new(domain.Auditor))
 	m.Provide(service.NewController).ToInterface(new(domain.Controller))
+	m.Provide(service.NewAgentRunObserver).ToInterface(new(workflowdomain.RunStatusObserver))
 	m.Provide(service.NewReaper).ToInterface(new(server.BackgroundJob))
+	m.Provide(service.NewRecoverySweeper).ToInterface(new(server.BackgroundJob))
+	m.Provide(service.NewFailedRetrySweeper).ToInterface(new(server.BackgroundJob))
+	m.Provide(service.NewOpenIssueResumeSweeper).ToInterface(new(server.BackgroundJob))
+	m.Provide(service.NewOrphanLiveSessionSweeper).ToInterface(new(server.BackgroundJob))
 
 	m.Provide(handler.NewAdminHandler).ToInterface(new(server.RouteProvider))
 	return m

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch, nextTick } from 'vue'
 import {
+  AlertTriangle,
   ArrowUp,
   Bot,
   Circle,
@@ -16,6 +17,7 @@ import {
   LayoutGrid,
   ListTodo,
   Lock,
+  MessageCircleQuestion,
   Play,
   MessageSquare,
   MinusCircle,
@@ -126,6 +128,42 @@ const {
   () => name.value,
   () => number.value,
 )
+
+const pendingQuestionnaires = computed(() =>
+  (questionnaires.value ?? []).filter((q) => q.status === 'open' && !q.my_submission),
+)
+const firstPendingQuestionnaire = computed(() => pendingQuestionnaires.value[0] ?? null)
+
+function questionnaireAnchorId(id: number) {
+  return `questionnaire-${id}`
+}
+
+async function focusQuestionnaire(id = firstPendingQuestionnaire.value?.id, behavior: ScrollBehavior = 'smooth') {
+  if (!id) return
+  if (tab.value !== 'conversation') {
+    tab.value = 'conversation'
+    await nextTick()
+  }
+  await nextTick()
+  if (typeof window === 'undefined') return
+  requestAnimationFrame(() => {
+    const el = document.getElementById(questionnaireAnchorId(id))
+    if (el) el.scrollIntoView({ behavior, block: 'center' })
+  })
+}
+
+const handledFocusKey = ref('')
+const questionnaireFocusKey = computed(() => {
+  if (String(route.query.focus ?? '') !== 'questionnaire') return ''
+  const id = firstPendingQuestionnaire.value?.id
+  return id ? `questionnaire:${id}` : ''
+})
+
+watch(questionnaireFocusKey, async (key) => {
+  if (!key || key === handledFocusKey.value) return
+  handledFocusKey.value = key
+  await focusQuestionnaire(firstPendingQuestionnaire.value?.id, 'smooth')
+}, { flush: 'post' })
 
 const commentBody = ref('')
 const commentBusy = ref(false)
@@ -776,6 +814,53 @@ onUnmounted(() => {
   </p>
   </header>
   <SilenceBanner :state="silence" compact />
+  <Card
+    v-if="hostYamlError"
+    class="mt-3 gap-0 border-destructive/40 bg-destructive/5 py-0"
+  >
+    <CardContent class="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0 space-y-1">
+        <p class="flex items-center gap-2 text-sm font-medium text-destructive">
+          <AlertTriangle class="size-4 shrink-0" />
+          {{ t('issue.commentForm.hostYamlError') }}
+        </p>
+        <p class="text-xs text-destructive/90">
+          {{ hostYamlError }}
+        </p>
+      </div>
+      <NuxtLink :to="`/${owner}/${name}/settings?tab=hangrix`" class="shrink-0">
+        <Button size="sm" variant="outline">
+          {{ t('repo.hangrix.editAgents') }}
+        </Button>
+      </NuxtLink>
+    </CardContent>
+  </Card>
+  <Card
+    v-if="pendingQuestionnaires.length > 0"
+    class="mt-3 gap-0 border-amber-300/60 bg-amber-50/80 py-0 dark:border-amber-500/30 dark:bg-amber-950/20"
+  >
+    <CardContent class="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0 space-y-1">
+        <p class="flex items-center gap-2 text-sm font-medium text-amber-900 dark:text-amber-200">
+          <MessageCircleQuestion class="size-4 shrink-0" />
+          {{ t('issue.questionnaire.blockedTitle', { n: pendingQuestionnaires.length }) }}
+        </p>
+        <p class="text-xs text-amber-800/90 dark:text-amber-300/90">
+          {{ t('issue.questionnaire.blockedBody', {
+            title: firstPendingQuestionnaire?.title ?? t('issue.questionnaire.title'),
+          }) }}
+        </p>
+      </div>
+      <Button
+        size="sm"
+        class="shrink-0"
+        variant="secondary"
+        @click="focusQuestionnaire()"
+      >
+        {{ t('issue.questionnaire.jumpToPending') }}
+      </Button>
+    </CardContent>
+  </Card>
   <div class="border-b border-border overflow-x-auto pb-2">
   <TabsList>
   <TabsTrigger value="conversation">
@@ -893,16 +978,21 @@ onUnmounted(() => {
                      as comments (ActorBadge header strip). The card
                      handles its own two states (unanswered placeholder,
                      answered with per-question results). -->
-                <QuestionnaireTimelineCard
+                <div
                   v-else-if="it.kind === 'questionnaire'"
+                  :id="questionnaireAnchorId(it.data.id)"
                   :key="it.key"
-                  :questionnaire="it.data"
-                  :owner="owner"
-                  :name="name"
-                  :issue-number="Number(number)"
-                  @submitted="refreshLive()"
-                  @closed="refreshLive()"
-                />
+                  class="scroll-mt-48"
+                >
+                  <QuestionnaireTimelineCard
+                    :questionnaire="it.data"
+                    :owner="owner"
+                    :name="name"
+                    :issue-number="Number(number)"
+                    @submitted="refreshLive()"
+                    @closed="refreshLive()"
+                  />
+                </div>
 
                 <!-- System events render as a thin inline strip between
                      comments — they're context, not threads of their own,

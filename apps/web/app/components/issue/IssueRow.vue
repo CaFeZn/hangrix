@@ -67,7 +67,10 @@ function rel(s?: string | null) {
       <div class="min-w-0 flex-1 space-y-1">
         <div class="flex flex-wrap items-center gap-2">
           <span class="truncate text-sm font-medium">{{ iss.title }}</span>
-          <IssueIndicators :indicators="iss.indicators" />
+          <IssueIndicators
+            :indicators="iss.indicators"
+            :questionnaire-to="iss.indicators?.pending_questionnaire ? `/${owner}/${name}/issues/${iss.number}?focus=questionnaire` : undefined"
+          />
           <Badge :class="badgeClass(iss.state)" variant="secondary">
             {{ t(`issue.state.${iss.state}`) }}
           </Badge>

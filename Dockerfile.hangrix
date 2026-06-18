@@ -6,7 +6,8 @@ WORKDIR /src
 
 COPY . .
 
-RUN corepack enable \
+RUN npm install -g pnpm@10.33.2 --registry=https://registry.npmmirror.com \
+  && pnpm config set registry https://registry.npmmirror.com \
   && pnpm install --frozen-lockfile \
   && pnpm --filter web generate \
   && node apps/hangrix/scripts/copy-web-dist.mjs
@@ -14,6 +15,7 @@ RUN corepack enable \
 FROM golang:1.26 AS go-build
 
 WORKDIR /src
+ENV GOPROXY=https://goproxy.cn,direct
 
 COPY . .
 COPY --from=web-build /src/apps/hangrix/internal/web/dist ./apps/hangrix/internal/web/dist
@@ -49,7 +51,6 @@ RUN chmod +x /usr/local/bin/hangrix \
   && mkdir -p /data/repos /data/assets /data/attachments
 
 ENV API_SERVER_ADDR=:8080
-ENV API_SERVER_URL=http://host.docker.internal:18081
 ENV API_DATABASE_DSN=postgres://hangrix:hangrix@postgres:5432/hangrix?sslmode=disable
 ENV API_REDIS_ADDR=redis:6379
 ENV API_STORAGE_REPOS_PATH=/data/repos

@@ -14,7 +14,7 @@
 llm_providers
   id                BIGSERIAL
   name              TEXT UNIQUE           -- 在 admin URL 里出现，不在代理 URL 里出现
-  type              openai | anthropic | openai-compat
+  type              openai | anthropic | openai-compat | deepseek
   base_url          TEXT
   api_key_encrypted TEXT                  -- cryptobox sealed
   allowed_models    TEXT[]                -- 已废弃：不再参与路由，仅兼容保留
@@ -36,17 +36,20 @@ Provider api_key 走 `pkg/cryptobox`（AES-256-GCM，master key 来自 `config.l
 3. 调 `Lookup.ResolveModel(ctx, model)` —— 按名字命中一个已定义的 model/group，返回其 members（按 priority 排序、过滤到当前可用）。命不中返回 `ErrNoModelMatch`（404）。
 4. 依次对候选 provider 解密 sealed api_key，按 `provider.type` dispatch 到对应 adapter，transient 失败按 priority 故障转移。
 
-## Adapter 三种
+## Adapter 四种
 
 | Type | 上游路径 | 翻译方向 |
 |---|---|---|
 | `openai` | `/v1/responses` | 透传 |
 | `openai-compat` | `/v1/chat/completions` | Responses ↔ Chat Completions |
+| `deepseek` | `/chat/completions` | Responses ↔ Chat Completions + DeepSeek thinking/effort 归一化 |
 | `anthropic` | `/v1/messages` | Responses ↔ Messages |
 
 代理本身只懂 Responses-API 进 / 出；adapter 的工作是把 typed `Request` 翻译成上游 wire、把上游 response 翻译回 typed `Response`。详细字段映射在 `internal/modules/llm_proxy/upstream/{openai,openai_compat,anthropic}.go`。
 
-**reasoning effort：** OpenAI `reasoning.effort` 在 `openai-compat` 透传（不识别的厂商会忽略未知字段）；`anthropic` 翻成 `thinking.budget_tokens`（minimal/low → 1024，medium → 4096，high → 16384），同时 drop temperature、bump max_tokens 防 400。
+`deepseek` 是 DeepSeek 的一等 provider，默认 `base_url = https://api.deepseek.com`，不需要再用 generic `openai-compat` 手工填 URL。Reasonix 仍然是一个可独立运行的终端 Agent，不嵌进 Hangrix 运行时；Hangrix 只集成 DeepSeek API 的原生 wire 差异。
+
+**reasoning effort：** OpenAI `reasoning.effort` 在 `openai-compat` 透传（不识别的厂商会忽略未知字段）；`deepseek` 会把 `minimal/low/medium` 归一化为 `high`、`xhigh/max` 归一化为 `max`，并把 `thinking: adaptive/enabled/disabled` 翻译为 DeepSeek 的 `thinking.type`；`anthropic` 翻成 `thinking.budget_tokens`（minimal/low → 1024，medium → 4096，high → 16384），同时 drop temperature、bump max_tokens 防 400。
 
 **reasoning content round-trip：** DeepSeek 等 `openai-compat` 类 reasoner 返回 `reasoning_content` 字段；adapter 提取到 `Response.Reasoning`，下一回合的 `KindReasoning` input item 会回填到对应 assistant message 的 `reasoning_content` —— 跨轮 chain-of-thought 不丢。Anthropic thinking blocks 同理，外加 signature 字段在 strict mode 下必须 round-trip。
 
@@ -62,6 +65,8 @@ session_id | provider_id | model | prompt_tokens | completion_tokens
 ```
 
 `session_id` 是 `agent_sessions.id`（无 FK，跨模块解耦）；写失败只记日志不阻断响应。`(provider_id, created_at DESC)` 复合索引给 M10+ dashboard 留路径。
+
+DeepSeek 的上下文缓存由上游自动处理，不需要 Hangrix 发送额外 header；上游返回的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` 会保留在 usage detail 的原始响应体里，便于排查缓存命中。
 
 ## 鉴权链
 

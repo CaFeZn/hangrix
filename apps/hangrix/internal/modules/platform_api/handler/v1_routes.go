@@ -79,6 +79,7 @@ func RegisterV1Routes(r chi.Router, api AgentAPI) {
 		r.Get("/", v1ReadProject(api))
 		r.Post("/repos", v1LinkProjectRepo(api))
 		r.Post("/issue-links", v1LinkProjectIssue(api))
+		r.Post("/issues", v1CreateProjectIssue(api))
 		r.Post("/repo-proposals", v1CreateProjectRepoProposal(api))
 	})
 

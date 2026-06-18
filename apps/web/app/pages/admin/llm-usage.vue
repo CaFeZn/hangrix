@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { Activity, Cpu, Download, Hash, Timer } from 'lucide-vue-next'
+import { Activity, Cpu, Download, Hash, RefreshCw, Timer } from 'lucide-vue-next'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -33,6 +33,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 
 import type { LLMUsage, LLMUsageDetail, LLMUsageListResp } from '~/types/llm-usage'
 import type { LLMProvider, LLMProviderListResp } from '~/types/llm-provider'
+import { useAdminRefresh } from '~/composables/useAdminRefresh'
 
 definePageMeta({ layout: 'admin' })
 
@@ -62,6 +63,7 @@ const filterProvider = ref<string>(ANY_PROVIDER)
 const filterSince = ref<string>('')
 const pageSize = ref<number>(50)
 const offset = ref<number>(0)
+const { refreshing, refreshNow } = useAdminRefresh(load, { intervalMs: 15_000 })
 
 // Aggregate cards reflect the visible page — total_calls comes from the
 // server-side count so it stays accurate even when only one page is loaded.
@@ -191,12 +193,12 @@ function formatStatusDetail(raw: string | undefined | null): string {
 // page 3 of the new filter set.
 function applyFilters() {
   offset.value = 0
-  load()
+  void refreshNow()
 }
 
 function onOffsetChange(v: number) {
   offset.value = v
-  load()
+  void refreshNow()
 }
 
 async function exportUsage(format: 'csv' | 'jsonl') {
@@ -235,15 +237,21 @@ async function exportUsage(format: 'csv' | 'jsonl') {
 
 onMounted(async () => {
   await loadProviders()
-  await load()
+  await refreshNow()
 })
 </script>
 
 <template>
   <div class="space-y-6">
-    <header class="space-y-1">
-      <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.usage.title') }}</h1>
-      <p class="text-sm text-muted-foreground">{{ t('admin.usage.subtitle') }}</p>
+    <header class="flex flex-wrap items-start justify-between gap-4">
+      <div class="space-y-1">
+        <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.usage.title') }}</h1>
+        <p class="text-sm text-muted-foreground">{{ t('admin.usage.subtitle') }}</p>
+      </div>
+      <Button variant="outline" :disabled="refreshing || loading" @click="refreshNow">
+        <RefreshCw class="size-4" :class="{ 'animate-spin': refreshing }" />
+        {{ t('repo.hangrix.refresh') }}
+      </Button>
     </header>
 
     <!-- Aggregate cards -->

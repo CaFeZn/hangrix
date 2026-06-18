@@ -44,9 +44,22 @@ type connectStubRepo struct {
 	listMessagesArgs  []int64
 	listMessagesReply []*domain.Message
 	claimQueue        []*domain.SessionInput
+	sessionByID       map[int64]*domain.AgentSession
+	markRunningIDs    []int64
 	markIdleSessionID int64
 	markIdleExit      *int32
 	markIdleErr       error
+}
+
+func (r *connectStubRepo) GetSessionByID(_ context.Context, id int64) (*domain.AgentSession, error) {
+	if r.sessionByID == nil {
+		return nil, domain.ErrSessionNotFound
+	}
+	s, ok := r.sessionByID[id]
+	if !ok {
+		return nil, domain.ErrSessionNotFound
+	}
+	return s, nil
 }
 
 func (r *connectStubRepo) ListMessages(_ context.Context, sessionID int64) ([]*domain.Message, error) {
@@ -66,6 +79,16 @@ func (r *connectStubRepo) ClaimPendingInputs(_ context.Context, _ int64, _ int) 
 	out := r.claimQueue
 	r.claimQueue = nil
 	return out, nil
+}
+
+func (r *connectStubRepo) MarkSessionRunning(_ context.Context, id int64) error {
+	r.markRunningIDs = append(r.markRunningIDs, id)
+	if r.sessionByID != nil {
+		if s, ok := r.sessionByID[id]; ok {
+			s.Status = domain.SessionStatusRunning
+		}
+	}
+	return nil
 }
 
 func (r *connectStubRepo) MarkSessionIdle(_ context.Context, id int64, exit *int32) error {
@@ -225,6 +248,52 @@ func TestAgentConnect_MarkIdle_FlipsSession(t *testing.T) {
 	defer cleanup()
 
 	_, err := client.MarkIdle(context.Background(), connect.NewRequest(&agentv1.MarkIdleRequest{SessionId: sid, RunningJobs: 0}))
+	if err != nil {
+		t.Fatalf("MarkIdle err: %v", err)
+	}
+	if repo.markIdleSessionID != sid {
+		t.Errorf("MarkSessionIdle target = %d, want %d", repo.markIdleSessionID, sid)
+	}
+}
+
+func TestAgentConnect_FetchHistory_MarksPendingSessionRunning(t *testing.T) {
+	const sid = int64(9)
+	repo := &connectStubRepo{
+		sessionByID: map[int64]*domain.AgentSession{
+			sid: {ID: sid, Status: domain.SessionStatusPending},
+		},
+	}
+	validator := &stubValidator{
+		expectedToken: "hgxs_test_token",
+		session:       &domain.AgentSession{ID: sid, Status: domain.SessionStatusPending},
+	}
+	client, cleanup := newConnectTestServer(t, repo, validator, "hgxs_test_token")
+	defer cleanup()
+
+	if _, err := client.FetchHistory(context.Background(), connect.NewRequest(&agentv1.FetchHistoryRequest{SessionId: sid})); err != nil {
+		t.Fatalf("FetchHistory err: %v", err)
+	}
+	if len(repo.markRunningIDs) != 1 || repo.markRunningIDs[0] != sid {
+		t.Fatalf("MarkSessionRunning calls = %v, want [%d]", repo.markRunningIDs, sid)
+	}
+}
+
+func TestAgentConnect_MarkIdle_IsIdempotentForAlreadySettledSession(t *testing.T) {
+	const sid = int64(8)
+	repo := &connectStubRepo{
+		markIdleErr: domain.ErrSessionStateInvalid,
+		sessionByID: map[int64]*domain.AgentSession{
+			sid: {ID: sid, Status: domain.SessionStatusIdle},
+		},
+	}
+	validator := &stubValidator{
+		expectedToken: "hgxs_test_token",
+		session:       &domain.AgentSession{ID: sid, Status: domain.SessionStatusRunning},
+	}
+	client, cleanup := newConnectTestServer(t, repo, validator, "hgxs_test_token")
+	defer cleanup()
+
+	_, err := client.MarkIdle(context.Background(), connect.NewRequest(&agentv1.MarkIdleRequest{SessionId: sid}))
 	if err != nil {
 		t.Fatalf("MarkIdle err: %v", err)
 	}
@@ -501,5 +570,50 @@ func TestTrimTrailingDanglingToolCallsProto(t *testing.T) {
 				t.Errorf("len=%d, want %d", len(got), tc.want)
 			}
 		})
+	}
+}
+
+func TestDropIncompleteToolCallChainsProto_RemovesInterruptedAssistantChain(t *testing.T) {
+	t.Parallel()
+
+	in := []*agentv1.HistoryItem{
+		{Role: "user", Content: "first event"},
+		{Role: "assistant", Content: "broken", ToolCalls: []*agentv1.ToolCall{
+			{Id: "tc_missing_1", Name: "issue_read"},
+			{Id: "tc_missing_2", Name: "issue_children"},
+		}},
+		{Role: "user", Kind: historyEventKind, Content: "later event"},
+		{Role: "assistant", Content: "follow-up"},
+	}
+
+	got := dropIncompleteToolCallChainsProto(in)
+	if len(got) != 3 {
+		t.Fatalf("len(got) = %d, want 3", len(got))
+	}
+	for _, it := range got {
+		if it.GetRole() == "assistant" && len(it.GetToolCalls()) > 0 {
+			t.Fatalf("unexpected dangling assistant tool call item remained: %+v", it)
+		}
+	}
+}
+
+func TestDropIncompleteToolCallChainsProto_RemovesOrphanToolResultsFromDroppedAssistant(t *testing.T) {
+	t.Parallel()
+
+	in := []*agentv1.HistoryItem{
+		{Role: "assistant", Content: "broken", ToolCalls: []*agentv1.ToolCall{
+			{Id: "tc_missing_1", Name: "issue_read"},
+			{Id: "tc_missing_2", Name: "issue_children"},
+		}},
+		{Role: "tool", ToolCallId: "tc_missing_1", Content: "{\"ok\":true}"},
+		{Role: "user", Kind: historyEventKind, Content: "later event"},
+	}
+
+	got := dropIncompleteToolCallChainsProto(in)
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].GetRole() != "user" || got[0].GetKind() != historyEventKind {
+		t.Fatalf("got[0] = %+v, want surviving event only", got[0])
 	}
 }

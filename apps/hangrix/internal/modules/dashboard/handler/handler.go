@@ -3,7 +3,9 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,17 +16,20 @@ import (
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/dashboard/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/dashboard/infra"
 	llmproviderdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/llm_provider/domain"
+	platformsettings "github.com/hangrix/hangrix/apps/hangrix/internal/modules/platform_settings/domain"
 )
 
 type Handler struct {
 	repo         *infra.PostgresRepo
 	providerRepo llmproviderdomain.Repo
+	settings     platformsettings.Store
 	middleware   authdomain.Middleware
 }
 
 type HandlerDeps struct {
 	Repo         *infra.PostgresRepo
 	ProviderRepo llmproviderdomain.Repo
+	Settings     platformsettings.Store
 	Middleware   authdomain.Middleware
 }
 
@@ -32,6 +37,7 @@ func NewHandler(deps *HandlerDeps) *Handler {
 	return &Handler{
 		repo:         deps.Repo,
 		providerRepo: deps.ProviderRepo,
+		settings:     deps.Settings,
 		middleware:   deps.Middleware,
 	}
 }
@@ -41,7 +47,43 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.Use(h.middleware.RequireAuth)
 		r.Use(h.middleware.RequireAdmin)
 		r.Get("/", h.getDashboard)
+		r.Get("/fast-mode", h.getFastMode)
+		r.Patch("/fast-mode", h.patchFastMode)
 	})
+}
+
+type fastModeResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
+const fastModeDescription = "When enabled, OpenAI-native ChatGPT providers are called through the /fast Responses API path."
+
+func (h *Handler) getFastMode(w http.ResponseWriter, r *http.Request) {
+	enabled, err := h.settings.GetBool(r.Context(), platformsettings.SettingChatGPTFastMode)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "fast mode setting: "+err.Error())
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, fastModeResponse{Enabled: enabled})
+}
+
+func (h *Handler) patchFastMode(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if body.Enabled == nil {
+		httpx.WriteError(w, http.StatusBadRequest, "enabled is required")
+		return
+	}
+	if err := h.settings.Set(r.Context(), platformsettings.SettingChatGPTFastMode, strconv.FormatBool(*body.Enabled), fastModeDescription); err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, "fast mode setting: "+err.Error())
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, fastModeResponse{Enabled: *body.Enabled})
 }
 
 func (h *Handler) getDashboard(w http.ResponseWriter, r *http.Request) {

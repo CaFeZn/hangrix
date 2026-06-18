@@ -2,10 +2,15 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"strconv"
 	"strings"
 
+	"github.com/hangrix/hangrix/apps/hangrix/internal/agentsconfig"
+	agentsessiondomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/agent_session/domain"
 	apidomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/platform_api/domain"
 	projectdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/project/domain"
 )
@@ -62,6 +67,97 @@ func (s *APIService) LinkProjectIssue(ctx context.Context, p *apidomain.Actor, p
 		kind = "implementation"
 	}
 	return s.r.deps.Projects.LinkIssue(ctx, projectID, repoID, iss.ID, 0, kind, strings.TrimSpace(summary))
+}
+
+func (s *APIService) CreateProjectIssue(ctx context.Context, p *apidomain.Actor, projectID, repoID int64, title, body, kind, summary string) (any, error) {
+	if s.r.deps.Projects == nil {
+		return nil, errors.New("project store unavailable")
+	}
+	if projectID <= 0 || repoID <= 0 {
+		return nil, errors.New("project_id and repo_id are required")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return nil, errors.New("title is required")
+	}
+	if err := s.ensureCurrentRepoLinked(ctx, p, projectID); err != nil {
+		return nil, err
+	}
+	repos, err := s.r.deps.Projects.ListRepos(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	var targetLinked bool
+	for _, repo := range repos {
+		if repo.RepoID == repoID {
+			targetLinked = true
+			break
+		}
+	}
+	if !targetLinked {
+		return nil, errors.New("target repo is not linked to this project")
+	}
+	targetRepo, err := s.r.deps.Repos.GetByID(ctx, repoID)
+	if err != nil {
+		return nil, fmt.Errorf("load target repo: %w", err)
+	}
+	baseBranch := targetRepo.DefaultBranch
+	iss, err := s.r.deps.Issues.Create(ctx, targetRepo.ID, 0, "", title, body, baseBranch, p.RoleKey, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("create issue: %w", err)
+	}
+	fsPath, err := s.r.deps.Storage.ResolvePath(targetRepo.OwnerName, targetRepo.Name)
+	if err != nil {
+		return nil, fmt.Errorf("resolve repo path: %w", err)
+	}
+	if err := s.r.deps.Git.CreateBranch(fsPath, iss.BranchName, baseBranch); err != nil {
+		return nil, fmt.Errorf("create branch ref: %w", err)
+	}
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = "implementation"
+	}
+	linkSummary := strings.TrimSpace(summary)
+	if linkSummary == "" {
+		linkSummary = title
+	}
+	link, err := s.r.deps.Projects.LinkIssue(ctx, projectID, repoID, iss.ID, 0, kind, linkSummary)
+	if err != nil {
+		return nil, fmt.Errorf("link issue to project: %w", err)
+	}
+	if s.r.deps.Spawner != nil {
+		payload, _ := json.Marshal(map[string]any{
+			"issue_title": iss.Title,
+			"issue_body":  iss.Body,
+		})
+		triggerActor := s.resolvePlatformActor(ctx, p)
+		if _, err := s.r.deps.Spawner.OnTrigger(ctx, agentsessiondomain.TriggerInput{
+			Trigger:     agentsconfig.TriggerIssueOpened,
+			CauseKind:   agentsessiondomain.CauseKindIssueOpened,
+			CauseID:     "",
+			RepoID:      targetRepo.ID,
+			IssueNumber: int32(iss.Number),
+			Actor:       triggerActor,
+			Payload:     payload,
+		}); err != nil {
+			log.Printf("platform_api: fire issue.opened repo=%d issue=%d: %v", targetRepo.ID, iss.Number, err)
+		}
+	}
+	return map[string]any{
+		"project_id":     projectID,
+		"repo_id":        repoID,
+		"issue_id":       iss.ID,
+		"issue_number":   iss.Number,
+		"title":          iss.Title,
+		"body":           iss.Body,
+		"branch_name":    iss.BranchName,
+		"base_branch":    iss.BaseBranch,
+		"link_id":        link.ID,
+		"link_kind":      link.Kind,
+		"link_summary":   link.Summary,
+		"target_repo":    targetRepo.OwnerName + "/" + targetRepo.Name,
+		"issue_url_hint": "/" + targetRepo.OwnerName + "/" + targetRepo.Name + "/issues/" + strconv.FormatInt(iss.Number, 10),
+	}, nil
 }
 
 func (s *APIService) CreateProjectRepoProposal(ctx context.Context, p *apidomain.Actor, projectID int64, ownerName, repoName, description, reason, moduleBoundary string) (any, error) {

@@ -43,6 +43,7 @@ export interface IssueListResp {
 export interface IssueIndicators {
   pending_questionnaire: boolean
   agent_mention: boolean
+  queued_agent_run?: boolean
 }
 
 export interface IssueComment {
@@ -363,4 +364,3 @@ export interface PlanResp {
   ready: number[]
   heuristic: boolean
 }
-

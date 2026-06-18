@@ -23,6 +23,7 @@ func TestDefaultRegistryCoversEveryProviderType(t *testing.T) {
 	for _, tp := range []domain.ProviderType{
 		domain.ProviderTypeOpenAI,
 		domain.ProviderTypeOpenAICompat,
+		domain.ProviderTypeDeepSeek,
 		domain.ProviderTypeAnthropic,
 		domain.ProviderTypeMock,
 	} {
@@ -48,6 +49,46 @@ func TestNewRegistryPanicsOnDuplicate(t *testing.T) {
 }
 
 // ---- OpenAI adapter (Responses-API native) ----
+
+func TestOpenAIRespondFastModePath(t *testing.T) {
+	cases := []struct {
+		name     string
+		fastMode bool
+		wantPath string
+	}{
+		{name: "default", wantPath: "/v1/responses"},
+		{name: "fast", fastMode: true, wantPath: "/fast/v1/responses"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id":     "resp_1",
+					"output": []map[string]any{{"type": "message", "role": "assistant", "content": []map[string]any{{"type": "output_text", "text": "ok"}}}},
+					"usage":  map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				})
+			}))
+			t.Cleanup(srv.Close)
+
+			_, err := upstream.NewOpenAI().Respond(context.Background(), &upstream.Request{
+				Model:    "gpt-test",
+				Input:    []upstream.InputItem{{Kind: upstream.KindMessage, Role: "user", Text: "hi"}},
+				APIKey:   "x",
+				BaseURL:  srv.URL,
+				Client:   srv.Client(),
+				FastMode: tc.fastMode,
+			})
+			if err != nil {
+				t.Fatalf("respond: %v", err)
+			}
+			if gotPath != tc.wantPath {
+				t.Fatalf("path = %q, want %q", gotPath, tc.wantPath)
+			}
+		})
+	}
+}
 
 // TestOpenAIRespondTranslatesInputItems verifies the OpenAI adapter
 // emits a Responses-API request that round-trips every InputKind, and
@@ -170,9 +211,9 @@ func TestOpenAIRespondNonReasoningOmitsInclude(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &seen)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":    "resp_1",
+			"id":     "resp_1",
 			"output": []map[string]any{{"type": "message", "role": "assistant", "content": []map[string]any{{"type": "output_text", "text": "ok"}}}},
-			"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			"usage":  map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -192,6 +233,44 @@ func TestOpenAIRespondNonReasoningOmitsInclude(t *testing.T) {
 	}
 	if _, ok := seen["include"]; ok {
 		t.Errorf("include should be omitted on non-reasoning request, got %v", seen["include"])
+	}
+}
+
+// TestOpenAIRespondParsesSSEFallback verifies that the OpenAI adapter can
+// consume an upstream that ignores `stream:false` and still returns SSE
+// event frames, as the local Codex-backed provider does.
+func TestOpenAIRespondParsesSSEFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.created\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0,\"total_tokens\":1}}}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_item.done\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thought\"}]}}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_item.done\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":4,\"total_tokens\":7,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n")
+	}))
+	t.Cleanup(srv.Close)
+
+	resp, err := upstream.NewOpenAI().Respond(context.Background(), &upstream.Request{
+		Model:   "gpt-5.5",
+		Input:   []upstream.InputItem{{Kind: upstream.KindMessage, Role: "user", Text: "hi"}},
+		APIKey:  "x",
+		BaseURL: srv.URL,
+		Client:  srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("respond: %v", err)
+	}
+	if resp.Text != "done" {
+		t.Fatalf("Text=%q, want done", resp.Text)
+	}
+	if resp.Reasoning != "thought" {
+		t.Fatalf("Reasoning=%q, want thought", resp.Reasoning)
+	}
+	if resp.Usage.TotalTokens != 7 || resp.Usage.ReasoningTokens != 2 {
+		t.Fatalf("Usage=%+v", resp.Usage)
 	}
 }
 
@@ -355,6 +434,61 @@ func TestOpenAICompatBaseURLRequired(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, upstream.ErrBaseURLRequired) {
 		t.Fatalf("err=%v, want ErrBaseURLRequired", err)
+	}
+}
+
+// TestDeepSeekRespondShaping verifies that the DeepSeek adapter keeps the
+// Chat Completions translation but applies DeepSeek-specific request knobs.
+func TestDeepSeekRespondShaping(t *testing.T) {
+	var seen map[string]any
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &seen)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "chatcmpl-ds",
+			"choices": []map[string]any{{
+				"message": map[string]any{
+					"role":              "assistant",
+					"content":           "ok",
+					"reasoning_content": "thought",
+				},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]any{
+				"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7,
+				"prompt_cache_hit_tokens":  2,
+				"prompt_cache_miss_tokens": 1,
+			},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	resp, err := upstream.NewDeepSeek().Respond(context.Background(), &upstream.Request{
+		Model:           "deepseek-v4-pro",
+		ReasoningEffort: "medium",
+		Thinking:        "adaptive",
+		Input: []upstream.InputItem{
+			{Kind: upstream.KindMessage, Role: "user", Text: "hi"},
+		},
+		APIKey: "x", BaseURL: srv.URL, Client: srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("respond: %v", err)
+	}
+	if gotPath != "/chat/completions" {
+		t.Fatalf("path = %q, want /chat/completions", gotPath)
+	}
+	if seen["reasoning_effort"] != "high" {
+		t.Errorf("reasoning_effort = %v, want high", seen["reasoning_effort"])
+	}
+	thinking, _ := seen["thinking"].(map[string]any)
+	if thinking == nil || thinking["type"] != "enabled" {
+		t.Errorf("thinking = %v, want {type: enabled}", seen["thinking"])
+	}
+	if resp.Text != "ok" || resp.Reasoning != "thought" {
+		t.Errorf("resp Text/Reasoning = %q/%q", resp.Text, resp.Reasoning)
 	}
 }
 
@@ -579,8 +713,8 @@ func TestAnthropicRespondEffortOnlyEmitsOutputConfig(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &seen)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":    "msg_x",
-			"model": "claude-opus-4-8",
+			"id":      "msg_x",
+			"model":   "claude-opus-4-8",
 			"content": []map[string]any{{"type": "text", "text": "ok"}},
 			"usage":   map[string]any{"input_tokens": 1, "output_tokens": 1},
 		})
@@ -618,10 +752,10 @@ func TestAnthropicRespondDisabledKeepsTemperature(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(body, &seen)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"id":    "msg_disabled",
-			"model": "claude-opus-4-8",
+			"id":      "msg_disabled",
+			"model":   "claude-opus-4-8",
 			"content": []map[string]any{{"type": "text", "text": "ok"}},
-			"usage":  map[string]any{"input_tokens": 1, "output_tokens": 1},
+			"usage":   map[string]any{"input_tokens": 1, "output_tokens": 1},
 		})
 	}))
 	t.Cleanup(srv.Close)

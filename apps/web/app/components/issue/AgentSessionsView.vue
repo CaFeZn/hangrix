@@ -24,6 +24,7 @@ import {
   Globe,
   Hammer,
   Keyboard,
+  LoaderCircle,
   Megaphone,
   Play,
   RefreshCw,
@@ -85,7 +86,16 @@ interface AgentMessage {
   created_at: string
 }
 
+interface PendingAgentRun {
+  run_id: number
+  status: string
+  created_at: string
+  started_at?: string | null
+  finished_at?: string | null
+}
+
 const sessions = ref<AgentSession[]>([])
+const pendingAgentRuns = ref<PendingAgentRun[]>([])
 const selectedId = ref<number | null>(null)
 const messages = ref<AgentMessage[]>([])
 const loading = ref(false)
@@ -106,12 +116,13 @@ const liveStatuses = new Set(['pending', 'claimed', 'running', 'idle'])
 function isLive(status: string) {
   return liveStatuses.has(status)
 }
-const hasLive = computed(() => sessions.value.some((s) => isLive(s.status)))
+const hasLive = computed(() => sessions.value.some((s) => isLive(s.status)) || pendingAgentRuns.value.length > 0)
 
 async function loadSessions() {
   try {
-    const data = await $fetch<{ items: AgentSession[] }>(baseUrl.value)
+    const data = await $fetch<{ items: AgentSession[], pending_agent_runs?: PendingAgentRun[] }>(baseUrl.value)
     sessions.value = data.items ?? []
+    pendingAgentRuns.value = data.pending_agent_runs ?? []
     error.value = null
     if (selectedId.value == null && sessions.value.length > 0) {
       // Default selection: first running session, falling back to the
@@ -120,6 +131,7 @@ async function loadSessions() {
       selectedId.value = live ? live.session_id : sessions.value[sessions.value.length - 1]!.session_id
     }
   } catch (e: unknown) {
+    pendingAgentRuns.value = []
     const msg = (e as { data?: { error?: string } })?.data?.error ?? t('agentSessions.loadFailed')
     error.value = String(msg)
   }
@@ -812,6 +824,13 @@ async function resetSession(s: AgentSession) {
         <Bot class="size-10 opacity-40" />
         <p>{{ t('agentSessions.empty') }}</p>
         <p class="text-xs">{{ t('agentSessions.emptyHint') }}</p>
+        <div
+          v-if="pendingAgentRuns.length > 0"
+          class="mt-2 inline-flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-emerald-700 dark:text-emerald-300"
+        >
+          <LoaderCircle class="size-4 animate-spin" />
+          <span>{{ t('agentSessions.queued', { n: pendingAgentRuns.length }) }}</span>
+        </div>
       </CardContent>
     </Card>
 
@@ -819,6 +838,15 @@ async function resetSession(s: AgentSession) {
       <!-- ─── left pane: session list ───────────────────────────── -->
       <Card class="gap-0 py-0">
         <CardContent class="max-h-48 overflow-y-auto p-0 lg:max-h-none">
+          <div
+            v-if="pendingAgentRuns.length > 0"
+            class="border-b border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300"
+          >
+            <span class="inline-flex items-center gap-1.5">
+              <LoaderCircle class="size-3.5 animate-spin" />
+              {{ t('agentSessions.queued', { n: pendingAgentRuns.length }) }}
+            </span>
+          </div>
           <ul class="divide-y">
             <li
               v-for="s in sessions"

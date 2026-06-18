@@ -9,17 +9,17 @@ import (
 	"strings"
 	"testing"
 
-	"time"
 	"github.com/go-chi/chi/v5"
+	"time"
 
 	authdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/auth/domain"
+	gitdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/git/domain"
 	orgdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/org/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/domain"
+	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/infra"
 	runnerdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/runner/domain"
 	tokendomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/token/domain"
 	userdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/user/domain"
-	gitdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/git/domain"
-	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/infra"
 )
 
 // ------- stubs -------
@@ -963,7 +963,6 @@ func TestContributionRefPushRules(t *testing.T) {
 	}
 }
 
-
 // ------- getRefs sort tests -------
 
 // stubGit implements gitdomain.Git. Only ListRefs is wired; every other
@@ -972,11 +971,11 @@ type stubGit struct {
 	listRefsFn func(path string) (*gitdomain.Refs, error)
 }
 
-func (s *stubGit) Init(path string, defaultBranch string) error                            { return nil }
+func (s *stubGit) Init(path string, defaultBranch string) error { return nil }
 func (s *stubGit) SeedInitialCommit(path, defaultBranch string, files map[string][]byte, authorName, authorEmail string) error {
 	return nil
 }
-func (s *stubGit) ListRefs(path string) (*gitdomain.Refs, error)             { return s.listRefsFn(path) }
+func (s *stubGit) ListRefs(path string) (*gitdomain.Refs, error) { return s.listRefsFn(path) }
 func (s *stubGit) ListCommits(path, ref string, offset, limit int) ([]*gitdomain.Commit, error) {
 	return nil, nil
 }
@@ -987,22 +986,24 @@ func (s *stubGit) Tree(path, refOrSha, treePath string) ([]*gitdomain.TreeEntry,
 func (s *stubGit) TreeView(path, refOrSha, treePath string) (*gitdomain.TreeView, error) {
 	return nil, nil
 }
-func (s *stubGit) Blob(path, refOrSha, filePath string) ([]byte, bool, error) { return nil, false, nil }
+func (s *stubGit) Blob(path, refOrSha, filePath string) ([]byte, bool, error)    { return nil, false, nil }
 func (s *stubGit) DiffRefs(path, from, to string) ([]*gitdomain.FileDiff, error) { return nil, nil }
 func (s *stubGit) DiffMergeBase(path, base, topic string) ([]*gitdomain.FileDiff, error) {
 	return nil, nil
 }
-func (s *stubGit) CreateBranch(path, branchName, startRef string) error           { return nil }
-func (s *stubGit) CreateBranchAt(path, branchName, commitSHA string) error         { return nil }
-func (s *stubGit) DeleteBranch(path, branchName string) error                      { return nil }
-func (s *stubGit) SetHEAD(path, branchName string) error                           { return nil }
-func (s *stubGit) CreateLightweightTag(path, tagName, refOrSha string) error       { return nil }
+func (s *stubGit) CreateBranch(path, branchName, startRef string) error      { return nil }
+func (s *stubGit) CreateBranchAt(path, branchName, commitSHA string) error   { return nil }
+func (s *stubGit) DeleteBranch(path, branchName string) error                { return nil }
+func (s *stubGit) SetHEAD(path, branchName string) error                     { return nil }
+func (s *stubGit) CreateLightweightTag(path, tagName, refOrSha string) error { return nil }
 func (s *stubGit) CreateAnnotatedTag(path, tagName, refOrSha, message string, tagger gitdomain.Signature) error {
 	return nil
 }
-func (s *stubGit) DeleteTag(path, tagName string) error                           { return nil }
-func (s *stubGit) ContainsCommit(path, sha string) (*gitdomain.ContainingRefs, error) { return nil, nil }
-func (s *stubGit) IsAncestor(path, ancestor, descendant string) (bool, error)       { return false, nil }
+func (s *stubGit) DeleteTag(path, tagName string) error { return nil }
+func (s *stubGit) ContainsCommit(path, sha string) (*gitdomain.ContainingRefs, error) {
+	return nil, nil
+}
+func (s *stubGit) IsAncestor(path, ancestor, descendant string) (bool, error) { return false, nil }
 func (s *stubGit) CheckFastForward(path, baseRef, headRef string) (bool, string, error) {
 	return false, "", nil
 }
@@ -1017,6 +1018,9 @@ func (s *stubGit) ApplyPatch(path, branch, patchText, message string, author, co
 	return "", nil
 }
 func (s *stubGit) EditAndCommit(path, branch, baseCommitSHA, filePath string, newContent []byte, message string, author, committer gitdomain.Signature) (string, error) {
+	return "", nil
+}
+func (s *stubGit) UpsertFilesAndCommit(path, branch, baseCommitSHA string, files map[string][]byte, message string, author, committer gitdomain.Signature) (string, error) {
 	return "", nil
 }
 func (s *stubGit) TagAnnotation(path, tagName string) (*gitdomain.TagAnnotation, error) {
@@ -1044,7 +1048,6 @@ func newTestHandlerForRefs(caller *userdomain.User, git *stubGit, resolv *stubRe
 		middleware: authMiddleware{user: caller},
 	}
 }
-
 
 // makeTags returns a slice of tags with known CreatedAt values so sort
 // order is deterministic across test runs.

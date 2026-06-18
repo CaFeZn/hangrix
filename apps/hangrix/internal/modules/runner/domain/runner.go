@@ -81,7 +81,7 @@ type Runner struct {
 	AgentTokenPrefix    string
 	AgentTokenHash      string
 	AgentTokenRevokedAt *time.Time
-	ActorID             int64   // FK to actors(id); replaces created_by
+	ActorID             int64 // FK to actors(id); replaces created_by
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -222,7 +222,7 @@ type AgentSession struct {
 	ExitCode              *int32
 	ErrorMessage          string
 	CreatedBy             int64
-	CreatedByActorID      int64  // FK to actors(id); resolved by spawner
+	CreatedByActorID      int64 // FK to actors(id); resolved by spawner
 	CreatedAt             time.Time
 	ClaimedAt             *time.Time
 	StartedAt             *time.Time
@@ -301,6 +301,24 @@ type SessionFilter struct {
 type SessionPage struct {
 	Offset int
 	Limit  int
+}
+
+// StaleRunningSession is a running agent_session row whose last observable
+// activity is older than a caller-supplied threshold. Used by the platform's
+// recovery sweeper to repair zombie `running` rows after runner / database
+// interruptions.
+type StaleRunningSession struct {
+	Session        *AgentSession
+	LastActivityAt *time.Time
+}
+
+// StaleTerminalSession is a failed/cancelled issue-scoped session whose last
+// observable activity is older than a caller-supplied threshold. Used by
+// recovery sweepers to distinguish retryable terminal failures from actively
+// progressing runs.
+type StaleTerminalSession struct {
+	Session        *AgentSession
+	LastActivityAt *time.Time
 }
 
 // MessageKind is the discriminator on agent_session_messages.kind. The set
@@ -564,6 +582,16 @@ type Repo interface {
 	// set as ListRecentSessions (windowing knobs ignored). Cheap COUNT(*)
 	// on a partial index; safe to issue per page-load.
 	CountRecentSessions(ctx context.Context, filter SessionFilter) (int64, error)
+	// ListStaleRunningSessions returns running issue-scoped sessions whose last
+	// message / LLM usage activity is older than threshold. Ordered from oldest
+	// activity first so a repair sweeper handles the stalest zombies before
+	// fresher rows.
+	ListStaleRunningSessions(ctx context.Context, threshold time.Duration, limit int) ([]*StaleRunningSession, error)
+	// ListStaleTerminalSessions returns failed/cancelled issue-scoped sessions
+	// whose last message / LLM usage activity is older than threshold. Ordered
+	// from oldest activity first so a recovery sweeper handles the stalest rows
+	// before fresher ones.
+	ListStaleTerminalSessions(ctx context.Context, threshold time.Duration, limit int) ([]*StaleTerminalSession, error)
 	ClaimNextSession(ctx context.Context, runnerID int64) (*AgentSession, error)
 	MarkSessionRunning(ctx context.Context, id int64) error
 	// MarkSessionTerminal flips a claimed/running session into a terminal

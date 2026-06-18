@@ -1,4 +1,4 @@
-export type ProviderType = 'openai' | 'anthropic' | 'openai-compat'
+export type ProviderType = 'openai' | 'anthropic' | 'openai-compat' | 'deepseek'
 
 export interface LLMProvider {
   id: number

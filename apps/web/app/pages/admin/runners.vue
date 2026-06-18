@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { toTypedSchema } from '@vee-validate/zod'
 import * as z from 'zod'
-import { AlertTriangle, Bot, Check, Copy, Download, Plus, Trash2, X } from 'lucide-vue-next'
+import { AlertTriangle, Bot, Check, Copy, Download, Plus, RefreshCw, Trash2, X } from 'lucide-vue-next'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -20,6 +20,7 @@ import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
 import type { Runner, RunnerCreateResp, RunnerListResp } from '~/types/runner'
+import { useAdminRefresh } from '~/composables/useAdminRefresh'
 
 definePageMeta({ layout: 'admin' })
 
@@ -34,6 +35,7 @@ setBreadcrumbs(() => [
 const runners = ref<Runner[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
+const { refreshing, refreshNow } = useAdminRefresh(load, { intervalMs: 10_000 })
 
 const createOpen = ref(false)
 const createError = ref<string | null>(null)
@@ -166,20 +168,28 @@ function acknowledge() {
   enrollRunner.value = null
 }
 
-onMounted(load)
+onMounted(() => {
+  void refreshNow()
+})
 </script>
 
 <template>
   <div class="space-y-6">
-    <header class="flex items-start justify-between gap-4">
+    <header class="flex flex-wrap items-start justify-between gap-4">
       <div class="space-y-1">
         <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.runners.title') }}</h1>
         <p class="text-sm text-muted-foreground">{{ t('admin.runners.subtitle') }}</p>
       </div>
-      <Button @click="createOpen = true">
-        <Plus class="size-4" />
-        {{ t('admin.runners.create') }}
-      </Button>
+      <div class="flex flex-wrap items-center gap-2">
+        <Button variant="outline" :disabled="refreshing || loading" @click="refreshNow">
+          <RefreshCw class="size-4" :class="{ 'animate-spin': refreshing }" />
+          {{ t('repo.hangrix.refresh') }}
+        </Button>
+        <Button @click="createOpen = true">
+          <Plus class="size-4" />
+          {{ t('admin.runners.create') }}
+        </Button>
+      </div>
     </header>
 
     <Card>

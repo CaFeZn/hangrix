@@ -196,6 +196,32 @@ func TestServiceGetDuration_unregisteredKey(t *testing.T) {
 	}
 }
 
+func TestServiceGetBool_registeredDefault(t *testing.T) {
+	svc := newTestService(newMockRepo(), []domain.Definition{
+		{Key: "flag", Default: "true", Description: "flag", Type: domain.ValueTypeBool},
+	})
+	got, err := svc.GetBool(context.Background(), "flag")
+	if err != nil {
+		t.Fatalf("GetBool: %v", err)
+	}
+	if !got {
+		t.Fatal("GetBool = false, want true")
+	}
+}
+
+func TestServiceGetInt_registeredDefault(t *testing.T) {
+	svc := newTestService(newMockRepo(), []domain.Definition{
+		{Key: "limit", Default: "256", Description: "limit", Type: domain.ValueTypeInt},
+	})
+	got, err := svc.GetInt(context.Background(), "limit")
+	if err != nil {
+		t.Fatalf("GetInt: %v", err)
+	}
+	if got != 256 {
+		t.Fatalf("GetInt = %d, want 256", got)
+	}
+}
+
 func TestServiceSet(t *testing.T) {
 	repo := newMockRepo()
 	svc := newTestService(repo, nil)
@@ -264,6 +290,22 @@ func TestServiceList(t *testing.T) {
 	}
 	if len(rows) != 2 {
 		t.Fatalf("len = %d, want 2", len(rows))
+	}
+}
+
+func TestServiceList_includesRegisteredDefaults(t *testing.T) {
+	svc := newTestService(newMockRepo(), []domain.Definition{
+		{Key: "firepower.enabled", Default: "false", Description: "Firepower", Type: domain.ValueTypeBool},
+	})
+	rows, err := svc.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len = %d, want 1", len(rows))
+	}
+	if rows[0].Key != "firepower.enabled" || rows[0].Value != "false" {
+		t.Fatalf("row = %+v", rows[0])
 	}
 }
 

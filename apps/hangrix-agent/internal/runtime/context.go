@@ -4,7 +4,13 @@
 // see on the next request.
 package runtime
 
-import "github.com/hangrix/hangrix/apps/hangrix-agent/internal/llm"
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/hangrix/hangrix/apps/hangrix-agent/internal/llm"
+)
 
 // Context is the rolling message list the runtime hands to the LLM each
 // turn. Append* methods are the only mutators so the windowing policy
@@ -103,4 +109,76 @@ func (c *Context) AppendSummary(content string) {
 		Kind:    llm.KindSummary,
 		Content: content,
 	})
+}
+
+// AppendContextLimitSummary is the hard fallback when upstream rejects the
+// current request before returning usage, so the normal compact_session nudge
+// never gets a chance to run. It preserves a bounded textual digest of the
+// current LLM-visible tail and anchors future Snapshot calls on that digest.
+func (c *Context) AppendContextLimitSummary(maxMessages, maxChars int) int {
+	if maxMessages <= 0 {
+		maxMessages = 24
+	}
+	if maxChars <= 0 {
+		maxChars = 24000
+	}
+	snap := c.Snapshot()
+	if len(snap) > maxMessages {
+		snap = snap[len(snap)-maxMessages:]
+	}
+	summary := buildContextLimitSummary(snap, maxChars)
+	c.AppendSummary(summary)
+	return len(snap)
+}
+
+func buildContextLimitSummary(messages []llm.Message, maxChars int) string {
+	var b strings.Builder
+	b.WriteString("Emergency context reset: the upstream LLM rejected the previous request because the conversation exceeded its context window. The full prior transcript remains in Hangrix audit history but is not sent to the LLM anymore. Continue the task from this compact digest; re-read files or platform state with tools when details are missing.\n")
+	b.WriteString("Reset at: ")
+	b.WriteString(time.Now().UTC().Format(time.RFC3339))
+	b.WriteString("\n\nRecent visible messages before reset:\n")
+	remaining := maxChars
+	for i, msg := range messages {
+		if remaining <= 0 {
+			b.WriteString("\n[truncated: digest character budget exhausted]\n")
+			break
+		}
+		header := fmt.Sprintf("\n[%02d] role=%s", i+1, msg.Role)
+		if msg.Kind != "" {
+			header += " kind=" + msg.Kind
+		}
+		if msg.ToolCallID != "" {
+			header += " tool_call_id=" + msg.ToolCallID
+		}
+		if len(msg.ToolCalls) > 0 {
+			names := make([]string, 0, len(msg.ToolCalls))
+			for _, call := range msg.ToolCalls {
+				names = append(names, call.Name)
+			}
+			header += " tool_calls=" + strings.Join(names, ",")
+		}
+		header += "\n"
+		b.WriteString(header)
+		remaining -= len(header)
+		if remaining <= 0 {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" && len(msg.ToolCalls) > 0 {
+			parts := make([]string, 0, len(msg.ToolCalls))
+			for _, call := range msg.ToolCalls {
+				parts = append(parts, call.Name+"("+call.Arguments+")")
+			}
+			content = "tool calls: " + strings.Join(parts, "; ")
+		}
+		if len(content) > remaining {
+			content = content[:remaining] + "\n[truncated message]"
+			remaining = 0
+		} else {
+			remaining -= len(content)
+		}
+		b.WriteString(content)
+		b.WriteString("\n")
+	}
+	return b.String()
 }

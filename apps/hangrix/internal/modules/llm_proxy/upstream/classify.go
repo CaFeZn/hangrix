@@ -14,7 +14,8 @@ type DispatchClass struct {
 //
 // Classification rules:
 //   - Upstream transient errors (408, 425, 429, 5xx, 529): fail over + backoff
-//   - Upstream client errors (400, 401, 403, 404, 422): stop (request problem)
+//   - Upstream provider auth/access errors (401, 403): fail over + backoff
+//   - Upstream request-shape errors (400, 404, 422): stop
 //   - Sentinel errors (ErrStreamingUnsupported, ErrBaseURLRequired): stop
 //   - Network / decode errors (anything else): fail over
 func ClassifyDispatchError(err error) DispatchClass {
@@ -22,9 +23,9 @@ func ClassifyDispatchError(err error) DispatchClass {
 	if errors.As(err, &ue) {
 		sc := ue.StatusCode
 		switch sc {
-		case 408, 425, 429, 500, 502, 503, 504, 529:
+		case 401, 403, 408, 425, 429, 500, 502, 503, 504, 529:
 			return DispatchClass{StatusCode: sc, FailOver: true}
-		case 400, 401, 403, 404, 422:
+		case 400, 404, 422:
 			return DispatchClass{StatusCode: sc, FailOver: false}
 		default:
 			return DispatchClass{StatusCode: sc, FailOver: sc >= 500}

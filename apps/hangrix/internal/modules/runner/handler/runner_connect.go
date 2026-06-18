@@ -42,6 +42,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/hangrix/hangrix/apps/hangrix/internal/config"
+	platformsettings "github.com/hangrix/hangrix/apps/hangrix/internal/modules/platform_settings/domain"
 	repodomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/runner/binaries"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/runner/domain"
@@ -95,6 +96,7 @@ type RunnerConnectHandler struct {
 	variables       repodomain.VariableStore
 	repoStore       repodomain.Store
 	workflow        runnerConnectWorkflow
+	settings        platformsettings.Store
 }
 
 type RunnerConnectHandlerDeps struct {
@@ -105,6 +107,7 @@ type RunnerConnectHandlerDeps struct {
 	Variables       repodomain.VariableStore
 	RepoStore       repodomain.Store
 	Workflow        *workflowservice.Service
+	Settings        platformsettings.Store
 }
 
 func NewRunnerConnectHandler(deps *RunnerConnectHandlerDeps) *RunnerConnectHandler {
@@ -121,6 +124,7 @@ func NewRunnerConnectHandler(deps *RunnerConnectHandlerDeps) *RunnerConnectHandl
 		variables:       deps.Variables,
 		repoStore:       deps.RepoStore,
 		workflow:        deps.Workflow,
+		settings:        deps.Settings,
 	}
 }
 
@@ -137,6 +141,7 @@ func newRunnerConnectHandlerForTest(
 	variables repodomain.VariableStore,
 	repoStore repodomain.Store,
 	workflow runnerConnectWorkflow,
+	settings platformsettings.Store,
 ) *RunnerConnectHandler {
 	return &RunnerConnectHandler{
 		repo:            repo,
@@ -147,6 +152,7 @@ func newRunnerConnectHandlerForTest(
 		variables:       variables,
 		repoStore:       repoStore,
 		workflow:        workflow,
+		settings:        settings,
 	}
 }
 
@@ -405,8 +411,8 @@ const connectTasksTick = 500 * time.Millisecond
 
 // maxTasksPerPoll is the server-side clamp on the number of tasks a
 // single Tasks call may return, regardless of the client's max_batch.
-// Matches the runner's default Parallelism (16).
-const maxTasksPerPoll = 16
+// Matches the local runner's high-throughput burst setting.
+const maxTasksPerPoll = 64
 
 // Tasks returns 0..K workflow_jobs for this runner, or empty after
 // pollWait. Agent sessions are NOT surfaced as tasks: the
@@ -434,8 +440,8 @@ func (h *RunnerConnectHandler) Tasks(
 	if batch < 1 {
 		batch = 1
 	}
-	if batch > maxTasksPerPoll {
-		batch = maxTasksPerPoll
+	if cap := h.maxTasksPerPoll(ctx); cap > 0 && batch > cap {
+		batch = cap
 	}
 
 	deadline := time.Now().Add(pollWait)
@@ -457,6 +463,21 @@ func (h *RunnerConnectHandler) Tasks(
 		case <-time.After(connectTasksTick):
 		}
 	}
+}
+
+func (h *RunnerConnectHandler) maxTasksPerPoll(ctx context.Context) int {
+	if h.settings == nil {
+		return maxTasksPerPoll
+	}
+	if enabled, err := h.settings.GetBool(ctx, platformsettings.SettingFirepowerEnabled); err == nil && enabled {
+		if v, err := h.settings.GetInt(ctx, platformsettings.SettingFirepowerRunnerMaxTasks); err == nil && v > 0 {
+			return v
+		}
+	}
+	if v, err := h.settings.GetInt(ctx, platformsettings.SettingRunnerMaxTasksPerPoll); err == nil && v > 0 {
+		return v
+	}
+	return maxTasksPerPoll
 }
 
 // buildBatchResponse builds a batch TasksResponse from claimed jobs.

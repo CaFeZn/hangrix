@@ -111,7 +111,9 @@ UPDATE workflow_job_runs
 SET status = 'running', runner_id = sqlc.arg('runner_id'), started_at = NOW()
 WHERE id = (
     SELECT j.id FROM workflow_job_runs j
+    JOIN workflow_runs wr ON wr.id = j.workflow_run_id
     WHERE j.status = 'pending'
+      AND wr.status IN ('pending', 'running')
       AND NOT EXISTS (
         SELECT 1 FROM workflow_job_runs j2
         WHERE j2.workflow_run_id = j.workflow_run_id
@@ -135,7 +137,9 @@ UPDATE workflow_job_runs
 SET status = 'running', runner_id = sqlc.arg('runner_id'), started_at = NOW()
 WHERE id = ANY(ARRAY(
     SELECT j.id FROM workflow_job_runs j
+    JOIN workflow_runs wr ON wr.id = j.workflow_run_id
     WHERE j.status = 'pending'
+      AND wr.status IN ('pending', 'running')
       AND NOT EXISTS (
         SELECT 1 FROM workflow_job_runs j2
         WHERE j2.workflow_run_id = j.workflow_run_id

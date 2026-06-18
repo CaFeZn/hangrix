@@ -44,6 +44,7 @@
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@tailwindcss/vite": "^4.0.0",
+    "@vitejs/plugin-legacy": "^7.2.1",
     "shadcn-nuxt": "^2.0.0",
     "tailwindcss": "^4.0.0",
     "tw-animate-css": "^1.0.0",

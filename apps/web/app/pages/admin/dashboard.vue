@@ -8,8 +8,10 @@ import {
   Cpu,
   Hash,
   LineChart,
+  RefreshCw,
   Server,
   Users,
+  Zap,
 } from 'lucide-vue-next'
 import { Line } from 'vue-chartjs'
 import {
@@ -30,6 +32,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import {
   Select,
   SelectContent,
@@ -42,6 +45,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 
 import type { DashboardResponse, DailyCallsPoint, DailyTokensPoint, RecentFailure } from '~/types/dashboard'
 import type { LLMProvider, LLMProviderListResp } from '~/types/llm-provider'
+import { useAdminRefresh } from '~/composables/useAdminRefresh'
 
 ChartJS.register(
   CategoryScale,
@@ -70,6 +74,10 @@ const data = ref<DashboardResponse | null>(null)
 const providers = ref<LLMProvider[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
+const fastModeEnabled = ref(false)
+const fastModeLoading = ref(false)
+const fastModeSaving = ref(false)
+const fastModeError = ref<string | null>(null)
 
 const ANY_PROVIDER = '__any__'
 
@@ -77,6 +85,7 @@ const rangePreset = ref<'7d' | '30d' | 'custom'>('7d')
 const filterProvider = ref<string>(ANY_PROVIDER)
 const customSince = ref('')
 const customUntil = ref('')
+const { refreshing, refreshNow } = useAdminRefresh(load, { intervalMs: 15_000 })
 
 // --- Derived ------------------------------------------------------------
 
@@ -122,10 +131,42 @@ async function loadProviders() {
   } catch { /* non-fatal */ }
 }
 
+async function loadFastMode() {
+  fastModeLoading.value = true
+  fastModeError.value = null
+  try {
+    const res = await $fetch<{ enabled: boolean }>('/api/admin/dashboard/fast-mode', { credentials: 'include' })
+    fastModeEnabled.value = !!res.enabled
+  } catch (e: any) {
+    fastModeError.value = e?.data?.error ?? t('admin.dashboard.fastMode.loadFailed')
+  } finally {
+    fastModeLoading.value = false
+  }
+}
+
+async function setFastMode(enabled: boolean) {
+  const previous = fastModeEnabled.value
+  fastModeEnabled.value = enabled
+  fastModeSaving.value = true
+  fastModeError.value = null
+  try {
+    const res = await $fetch<{ enabled: boolean }>('/api/admin/dashboard/fast-mode', {
+      method: 'PATCH',
+      credentials: 'include',
+      body: { enabled },
+    })
+    fastModeEnabled.value = !!res.enabled
+  } catch (e: any) {
+    fastModeEnabled.value = previous
+    fastModeError.value = e?.data?.error ?? t('admin.dashboard.fastMode.saveFailed')
+  } finally {
+    fastModeSaving.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   error.value = null
-  data.value = null
   try {
     const res = await $fetch<DashboardResponse>('/api/admin/dashboard', {
       credentials: 'include',
@@ -140,7 +181,7 @@ async function load() {
 }
 
 function applyFilters() {
-  load()
+  void refreshNow()
 }
 
 // --- Chart data ---------------------------------------------------------
@@ -289,18 +330,51 @@ function failureStatusVariant(_failure: RecentFailure) {
 // --- Lifecycle ----------------------------------------------------------
 
 onMounted(async () => {
-  await loadProviders()
-  await load()
+  await Promise.all([loadProviders(), loadFastMode()])
+  await refreshNow()
 })
 </script>
 
 <template>
   <div class="space-y-6">
     <!-- Header -->
-    <header class="space-y-1">
-      <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.dashboard.title') }}</h1>
-      <p class="text-sm text-muted-foreground">{{ t('admin.dashboard.subtitle') }}</p>
+    <header class="flex flex-wrap items-start justify-between gap-4">
+      <div class="space-y-1">
+        <h1 class="text-2xl font-semibold tracking-tight">{{ t('admin.dashboard.title') }}</h1>
+        <p class="text-sm text-muted-foreground">{{ t('admin.dashboard.subtitle') }}</p>
+      </div>
+      <Button variant="outline" :disabled="refreshing || loading" @click="refreshNow">
+        <RefreshCw class="size-4" :class="{ 'animate-spin': refreshing }" />
+        {{ t('repo.hangrix.refresh') }}
+      </Button>
     </header>
+
+    <!-- ChatGPT fast mode -->
+    <Card class="border-amber-500/25 bg-amber-500/5">
+      <CardContent class="flex flex-col gap-4 pt-6 sm:flex-row sm:items-center sm:justify-between">
+        <div class="min-w-0 space-y-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <Zap class="size-4 text-amber-500" />
+            <h2 class="text-base font-semibold">{{ t('admin.dashboard.fastMode.title') }}</h2>
+            <Badge :variant="fastModeEnabled ? 'secondary' : 'outline'">
+              {{ fastModeEnabled ? t('admin.dashboard.fastMode.enabled') : t('admin.dashboard.fastMode.disabled') }}
+            </Badge>
+          </div>
+          <p class="text-sm text-muted-foreground">{{ t('admin.dashboard.fastMode.description') }}</p>
+          <p v-if="fastModeError" class="text-sm text-destructive">{{ fastModeError }}</p>
+        </div>
+        <div class="flex shrink-0 items-center gap-3">
+          <span class="text-sm text-muted-foreground">
+            {{ fastModeSaving ? t('admin.lifecycle.saving') : (fastModeEnabled ? t('admin.dashboard.fastMode.enabled') : t('admin.dashboard.fastMode.disabled')) }}
+          </span>
+          <Switch
+            :checked="fastModeEnabled"
+            :disabled="fastModeLoading || fastModeSaving"
+            @update:checked="setFastMode"
+          />
+        </div>
+      </CardContent>
+    </Card>
 
     <!-- Filters -->
     <Card>

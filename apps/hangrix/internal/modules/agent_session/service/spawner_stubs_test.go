@@ -23,12 +23,19 @@ import (
 type stubWorkflow struct {
 	mu    sync.Mutex
 	calls []workflowsvc.AgentRunSpec
+	runs  []*workflowdomain.WorkflowRun
+	jobs  map[int64][]*workflowdomain.WorkflowJobRun
 	// failOn lets a test simulate workflow.CreateAgentRun failures (e.g.
 	// migration not applied) for the dispatch-failure code paths.
 	failOn map[int64]error
 }
 
-func newStubWorkflow() *stubWorkflow { return &stubWorkflow{failOn: map[int64]error{}} }
+func newStubWorkflow() *stubWorkflow {
+	return &stubWorkflow{
+		failOn: map[int64]error{},
+		jobs:   map[int64][]*workflowdomain.WorkflowJobRun{},
+	}
+}
 
 func (w *stubWorkflow) CreateAgentRun(_ context.Context, spec workflowsvc.AgentRunSpec) (*workflowdomain.WorkflowRun, []*workflowdomain.WorkflowJobRun, error) {
 	w.mu.Lock()
@@ -41,12 +48,22 @@ func (w *stubWorkflow) CreateAgentRun(_ context.Context, spec workflowsvc.AgentR
 		ID:           int64(len(w.calls)),
 		RepoID:       spec.Repo.ID,
 		WorkflowName: workflowdomain.InternalAgentWorkflowName,
+		Status:       workflowdomain.RunStatusRunning,
+		Ref:          spec.WorkingBranch,
 	}
 	job := &workflowdomain.WorkflowJobRun{
 		ID:            int64(len(w.calls)),
 		WorkflowRunID: run.ID,
 		JobKey:        "agent",
+		Status:        workflowdomain.JobStatusRunning,
+		StepsJSON: mustMarshalJSON([]map[string]any{{
+			"env": map[string]string{
+				"HANGRIX_SESSION_ID": fmt.Sprintf("%d", spec.SessionID),
+			},
+		}}),
 	}
+	w.runs = append(w.runs, run)
+	w.jobs[run.ID] = []*workflowdomain.WorkflowJobRun{job}
 	return run, []*workflowdomain.WorkflowJobRun{job}, nil
 }
 
@@ -57,6 +74,29 @@ func (w *stubWorkflow) Calls() []workflowsvc.AgentRunSpec {
 	out := make([]workflowsvc.AgentRunSpec, len(w.calls))
 	copy(out, w.calls)
 	return out
+}
+
+func (w *stubWorkflow) ListAgentRunsByRepo(_ context.Context, repoID int64, status string, _, _ int32) ([]*workflowdomain.WorkflowRun, int64, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []*workflowdomain.WorkflowRun
+	for _, run := range w.runs {
+		if run != nil && run.RepoID == repoID && (status == "" || string(run.Status) == status) {
+			out = append(out, run)
+		}
+	}
+	return out, int64(len(out)), nil
+}
+
+func (w *stubWorkflow) ListJobRuns(_ context.Context, workflowRunID int64) ([]*workflowdomain.WorkflowJobRun, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.jobs[workflowRunID], nil
+}
+
+func mustMarshalJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 // stubBlob feeds the spawner pre-canned bytes for each (ref, path).
@@ -271,6 +311,9 @@ func (g *stubGit) ApplyPatch(string, string, string, string, gitdomain.Signature
 func (g *stubGit) EditAndCommit(string, string, string, string, []byte, string, gitdomain.Signature, gitdomain.Signature) (string, error) {
 	panic("EditAndCommit not stubbed")
 }
+func (g *stubGit) UpsertFilesAndCommit(string, string, string, map[string][]byte, string, gitdomain.Signature, gitdomain.Signature) (string, error) {
+	panic("UpsertFilesAndCommit not stubbed")
+}
 func (g *stubGit) TagAnnotation(string, string) (*gitdomain.TagAnnotation, error) {
 	panic("TagAnnotation not stubbed")
 }
@@ -307,6 +350,13 @@ func (r *stubRunnerRepo) ListRecentSessions(_ context.Context, _ runnerdomain.Se
 
 func (r *stubRunnerRepo) CountRecentSessions(_ context.Context, _ runnerdomain.SessionFilter) (int64, error) {
 	return int64(len(r.sessions)), nil
+}
+
+func (r *stubRunnerRepo) ListStaleRunningSessions(_ context.Context, _ time.Duration, _ int) ([]*runnerdomain.StaleRunningSession, error) {
+	return nil, nil
+}
+func (r *stubRunnerRepo) ListStaleTerminalSessions(_ context.Context, _ time.Duration, _ int) ([]*runnerdomain.StaleTerminalSession, error) {
+	return nil, nil
 }
 
 func (r *stubRunnerRepo) DeleteRunner(_ context.Context, _ int64) error { return nil }
@@ -400,7 +450,7 @@ func (r *stubRunnerRepo) GetRunnerByAgentTokenPrefix(context.Context, string) (*
 	panic("GetRunnerByAgentTokenPrefix not stubbed")
 }
 func (r *stubRunnerRepo) ListRunners(context.Context, *int64, *runnerdomain.Visibility) ([]*runnerdomain.Runner, error) {
-	panic("ListRunners not stubbed")
+	return nil, nil
 }
 func (r *stubRunnerRepo) DisableRunner(context.Context, int64) error {
 	panic("DisableRunner not stubbed")
@@ -428,6 +478,7 @@ func (r *stubRunnerRepo) ListSessions(context.Context, *int64, *runnerdomain.Ses
 func (r *stubRunnerRepo) ClaimNextSession(context.Context, int64) (*runnerdomain.AgentSession, error) {
 	panic("ClaimNextSession not stubbed")
 }
+
 // MarkSessionRunning is invoked by Spawner.dispatchAgentRun after the
 // _agent workflow run is created. Update the in-memory row's status so
 // tests that inspect post-dispatch state see the same state machine

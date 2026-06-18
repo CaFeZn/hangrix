@@ -42,6 +42,9 @@ func (o *CIStatusObserver) OnRunStatusChanged(ctx context.Context, oldStatus wor
 	if o.spawner == nil {
 		return nil
 	}
+	if run == nil || run.WorkflowName == workflowdomain.InternalAgentWorkflowName {
+		return nil
+	}
 	issueNumber := parseIssueRef(run.Ref)
 	if issueNumber <= 0 {
 		return nil // not associated with an issue

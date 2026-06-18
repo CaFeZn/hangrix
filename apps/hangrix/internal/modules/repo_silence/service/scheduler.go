@@ -3,9 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
-	"os/exec"
 	"sync"
 	"time"
 
@@ -13,8 +11,8 @@ import (
 
 	"github.com/hangrix/hangrix/apps/hangrix/internal/agentsconfig"
 	automationdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/automation/domain"
-	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo_silence/domain"
 	repodomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/domain"
+	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo_silence/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/server"
 )
 
@@ -106,18 +104,16 @@ func (s *Scheduler) processRepo(ctx context.Context, repo automationdomain.RepoR
 		return
 	}
 
-	// Read .hangrix/agents.yml from the repo's default branch.
-	raw, ok := readBlob(ctx, fsPath, repo.DefaultBranch, ".hangrix/agents.yml")
-	if !ok {
-		return
-	}
-
-	cfg, err := agentsconfig.ParseHostConfig(raw)
+	cfg, err := agentsconfig.LoadHostConfig(&agentsconfig.GitFileProvider{
+		Ctx:        ctx,
+		RepoFSPath: fsPath,
+		Ref:        repo.DefaultBranch,
+	})
 	if err != nil {
-		log.Printf("repo_silence scheduler: repo %d parse agents.yml: %v", repo.ID, err)
+		log.Printf("repo_silence scheduler: repo %d load host config: %v", repo.ID, err)
 		return
 	}
-	if cfg.Silence == nil || len(cfg.Silence.Schedules) == 0 {
+	if cfg == nil || cfg.Silence == nil || len(cfg.Silence.Schedules) == 0 {
 		return
 	}
 
@@ -244,24 +240,6 @@ func (s *Scheduler) processExit(ctx context.Context, repoID int64, state *domain
 	}
 
 	log.Printf("repo_silence scheduler: exited silence for repo %d (schedule=%q)", repoID, state.SourceRef)
-}
-
-// readBlob reads a file at ref:path from a bare repo. Returns (content, true)
-// on success, (nil, false) when the file doesn't exist or can't be read.
-func readBlob(ctx context.Context, repoFsPath, ref, path string) ([]byte, bool) {
-	cmd := exec.CommandContext(ctx,
-		"git",
-		"--git-dir="+repoFsPath,
-		"cat-file",
-		"-p",
-		ref+":"+path,
-	)
-	cmd.Stderr = io.Discard
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, false
-	}
-	return out, true
 }
 
 // compile-time check

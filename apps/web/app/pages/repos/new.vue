@@ -53,6 +53,8 @@ const schema = computed(() => toTypedSchema(z.object({
   visibility: z.enum(['public', 'private']),
   default_branch: z.string().max(100).optional(),
   init_readme: z.boolean().optional(),
+  init_hangrix: z.boolean().optional(),
+  hangrix_template: z.enum(['default', 'docs']).optional(),
 })))
 
 const initial = computed(() => ({
@@ -62,6 +64,8 @@ const initial = computed(() => ({
   visibility: 'private' as const,
   default_branch: 'main',
   init_readme: true,
+  init_hangrix: false,
+  hangrix_template: 'default' as const,
 }))
 
 const formError = ref<string | null>(null)
@@ -73,6 +77,7 @@ async function onSubmit(values: any) {
     description: values.description ?? '',
     visibility: values.visibility,
     init_readme: !!values.init_readme,
+    init_hangrix: !!values.init_hangrix,
   }
   const ownerVal = (values.owner ?? '').trim()
   if (ownerVal && ownerVal !== SELF_SENTINEL) {
@@ -80,6 +85,9 @@ async function onSubmit(values: any) {
   }
   if (values.default_branch && values.default_branch.trim()) {
     body.default_branch = values.default_branch.trim()
+  }
+  if (values.init_hangrix && values.hangrix_template) {
+    body.hangrix_template = values.hangrix_template
   }
 
   try {
@@ -221,6 +229,52 @@ onMounted(async () => {
                   <p class="text-xs text-muted-foreground">{{ t('repo.initReadmeHint') }}</p>
                 </div>
               </div>
+              <FormMessage />
+            </FormItem>
+          </FormField>
+
+          <FormField name="init_hangrix">
+            <FormItem class="space-y-3">
+              <div class="flex items-start gap-3 rounded-md border p-3">
+                <Checkbox
+                  id="init-hangrix"
+                  class="mt-1"
+                  :model-value="!!values.init_hangrix"
+                  @update:model-value="(v) => setFieldValue('init_hangrix', !!v)"
+                />
+                <div class="space-y-0.5">
+                  <Label for="init-hangrix" class="text-sm font-medium">
+                    {{ t('repo.initHangrix') }}
+                  </Label>
+                  <p class="text-xs text-muted-foreground">{{ t('repo.initHangrixHint') }}</p>
+                </div>
+              </div>
+              <FormMessage />
+            </FormItem>
+          </FormField>
+
+          <FormField v-if="values.init_hangrix" name="hangrix_template">
+            <FormItem>
+              <FormLabel>{{ t('repo.hangrixTemplate') }}</FormLabel>
+              <FormControl>
+                <Select
+                  :model-value="values.hangrix_template || 'default'"
+                  @update:model-value="(v) => setFieldValue('hangrix_template', String(v ?? 'default'))"
+                >
+                  <SelectTrigger class="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="default">
+                      {{ t('repo.hangrixTemplateDefault') }}
+                    </SelectItem>
+                    <SelectItem value="docs">
+                      {{ t('repo.hangrixTemplateDocs') }}
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </FormControl>
+              <p class="text-xs text-muted-foreground">{{ t('repo.hangrixTemplateHint') }}</p>
               <FormMessage />
             </FormItem>
           </FormField>

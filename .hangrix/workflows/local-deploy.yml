@@ -1,0 +1,32 @@
+version: 1
+name: local-deploy
+on:
+  repo.push:
+    branches: [main]
+    paths:
+      - ".hangrix/**"
+      - "apps/**"
+      - "pkg/**"
+      - "Dockerfile.hangrix"
+      - "docker-compose.deploy.yml"
+      - "go.work"
+      - "go.work.sum"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+  workflow.dispatch:
+    inputs:
+      - name: reason
+
+env:
+  HANGRIX_DEPLOY_PROJECT: hangrix-main
+  HANGRIX_DEPLOY_SERVICE: hangrix
+  HANGRIX_DEPLOY_RUNTIME_APP: /run/desktop/mnt/host/d/Codes/hangrix-main-docker/hangrix-main/.runtime/app
+
+jobs:
+  deploy:
+    name: Deploy local Docker instance
+    timeout_minutes: 180
+    steps:
+      - name: Rebuild and restart hangrix
+        run: bash .hangrix/scripts/deploy-local-docker.sh

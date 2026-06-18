@@ -83,6 +83,7 @@ type AgentAPI interface {
 	ReadProject(ctx context.Context, p *apidomain.Actor, projectID int64) (any, error)
 	LinkProjectRepo(ctx context.Context, p *apidomain.Actor, projectID, repoID int64, purpose, role string) (any, error)
 	LinkProjectIssue(ctx context.Context, p *apidomain.Actor, projectID, repoID, issueNumber int64, kind, summary string) (any, error)
+	CreateProjectIssue(ctx context.Context, p *apidomain.Actor, projectID, repoID int64, title, body, kind, summary string) (any, error)
 	CreateProjectRepoProposal(ctx context.Context, p *apidomain.Actor, projectID int64, ownerName, repoName, description, reason, moduleBoundary string) (any, error)
 
 	// LLM Models

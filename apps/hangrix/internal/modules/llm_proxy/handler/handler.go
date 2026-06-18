@@ -62,6 +62,7 @@ import (
 	"github.com/hangrix/hangrix/apps/hangrix/internal/config"
 	llmdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/llm_provider/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/llm_proxy/upstream"
+	platformsettings "github.com/hangrix/hangrix/apps/hangrix/internal/modules/platform_settings/domain"
 	silencedomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo_silence/domain"
 	runnerdomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/runner/domain"
 	"github.com/hangrix/hangrix/pkg/cryptobox"
@@ -88,6 +89,7 @@ type Handler struct {
 	lookup      llmdomain.Lookup
 	validator   runnerdomain.SessionTokenValidator
 	silenceGate silencedomain.SilenceGate
+	settings    platformsettings.Store
 	registry    *upstream.Registry
 	box         *cryptobox.Box
 	client      *http.Client
@@ -97,6 +99,7 @@ type HandlerDeps struct {
 	Lookup      llmdomain.Lookup
 	Validator   runnerdomain.SessionTokenValidator
 	SilenceGate silencedomain.SilenceGate
+	Settings    platformsettings.Store
 	Registry    *upstream.Registry
 	Config      *config.Config
 }
@@ -110,6 +113,7 @@ func NewHandler(deps *HandlerDeps) *Handler {
 		lookup:      deps.Lookup,
 		validator:   deps.Validator,
 		silenceGate: deps.SilenceGate,
+		settings:    deps.Settings,
 		registry:    deps.Registry,
 		box:         box,
 		client:      &http.Client{Timeout: upstreamTimeout},
@@ -261,6 +265,15 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request) {
 		upReq.APIKey = apiKey
 		upReq.BaseURL = cand.Provider.BaseURL
 		upReq.Client = h.client
+		upReq.FastMode = false
+		if cand.Provider.Type == llmdomain.ProviderTypeOpenAI && h.settings != nil {
+			enabled, err := h.settings.GetBool(r.Context(), platformsettings.SettingChatGPTFastMode)
+			if err != nil {
+				httpx.WriteError(w, http.StatusInternalServerError, "chatgpt fast mode setting: "+err.Error())
+				return
+			}
+			upReq.FastMode = enabled
+		}
 
 		upResp, dispatchErr := adapter.Respond(r.Context(), upReq)
 
@@ -271,17 +284,17 @@ func (h *Handler) respond(w http.ResponseWriter, r *http.Request) {
 			outBody, err := upstream.MarshalResponsesAPIResponse(upResp)
 			if err != nil {
 				httpx.WriteError(w, http.StatusInternalServerError, "failed to encode response")
-				h.recordUsage(r.Context(), sess, cand.Provider.ID, cand.Model, upResp.Usage, http.StatusInternalServerError, err.Error(), r.URL.Path, time.Since(start), string(body), "")
+				h.recordUsage(r.Context(), sess, cand.Provider.ID, cand.Model, upResp.Usage, http.StatusInternalServerError, err.Error(), r.URL.Path, time.Since(start), string(body), string(upResp.Raw))
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if _, err := w.Write(outBody); err != nil {
-				h.recordUsage(r.Context(), sess, cand.Provider.ID, cand.Model, upResp.Usage, http.StatusOK, err.Error(), r.URL.Path, time.Since(start), string(body), string(outBody))
+				h.recordUsage(r.Context(), sess, cand.Provider.ID, cand.Model, upResp.Usage, http.StatusOK, err.Error(), r.URL.Path, time.Since(start), string(body), string(upResp.Raw))
 				return
 			}
 			h.recordUsage(r.Context(), sess, cand.Provider.ID, cand.Model, upResp.Usage,
-				http.StatusOK, "", r.URL.Path, time.Since(start), string(body), string(outBody))
+				http.StatusOK, "", r.URL.Path, time.Since(start), string(body), string(upResp.Raw))
 			return
 		}
 

@@ -84,18 +84,21 @@ type Request struct {
 	// ignore this field.
 	Thinking string
 
+	// FastMode selects the ChatGPT fast path for OpenAI-native providers.
+	// Only the OpenAI adapter consumes this flag; OpenAI-compatible and
+	// other vendor adapters must ignore it.
+	FastMode bool
+
 	// APIKey is the decrypted upstream credential the adapter places
 	// on the outgoing request. Bearer-format for OpenAI-family;
 	// x-api-key for Anthropic.
 	APIKey string
 
-	// BaseURL is the upstream base — for OpenAI-compat adapters it
-	// MUST already include any API version segment (e.g.
-	// `https://api.deepseek.com/v1`), because the adapter appends the
-	// bare native path (`/chat/completions`, `/responses`, …) without
-	// prefixing `/v1`. Operators configuring a new provider should
-	// copy the version-suffixed base URL straight from the vendor's
-	// docs.
+	// BaseURL is the upstream base. Generic OpenAI-compatible providers must
+	// include any API version segment the vendor requires, because the adapter
+	// appends `/chat/completions` literally. Dedicated adapters may provide
+	// their own default and URL convention, e.g. DeepSeek defaults to
+	// `https://api.deepseek.com`.
 	BaseURL string
 
 	// Client is the HTTP client to use for the upstream call. Owned by
@@ -264,6 +267,7 @@ func Default() *Registry {
 	return NewRegistry(
 		NewOpenAI(),
 		NewOpenAICompat(),
+		NewDeepSeek(),
 		NewAnthropic(),
 		NewMock(),
 	)

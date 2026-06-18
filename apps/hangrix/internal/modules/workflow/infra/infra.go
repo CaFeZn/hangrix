@@ -26,7 +26,8 @@ var migrationsFS embed.FS
 
 // PostgresRepo implements domain.Store on top of a pgx pool.
 type PostgresRepo struct {
-	q *workflowdb.Queries
+	q    *workflowdb.Queries
+	pool *pgxpool.Pool
 }
 
 // PostgresRepoDeps wires the PostgresRepo's dependencies through ioc.
@@ -44,7 +45,10 @@ func NewPostgresRepo(deps *PostgresRepoDeps) *PostgresRepo {
 	if err := database.Migrate(deps.Pool, sub, "goose_workflow", "."); err != nil {
 		panic(fmt.Errorf("apply workflow migrations: %w", err))
 	}
-	return &PostgresRepo{q: workflowdb.New(deps.Pool)}
+	return &PostgresRepo{
+		q:    workflowdb.New(deps.Pool),
+		pool: deps.Pool,
+	}
 }
 
 // ---- workflow runs ----
@@ -92,7 +96,14 @@ func (r *PostgresRepo) CreateRun(ctx context.Context, params domain.CreateRunPar
 		trigWfID = pgtype.Int8{Int64: params.TriggerActor.WorkflowRunID, Valid: true}
 	}
 
-	dbRun, err := r.q.CreateWorkflowRun(ctx, workflowdb.CreateWorkflowRunParams{
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("begin workflow run tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := r.q.WithTx(tx)
+
+	dbRun, err := qtx.CreateWorkflowRun(ctx, workflowdb.CreateWorkflowRunParams{
 		RepoID:                    params.RepoID,
 		WorkflowName:              params.WorkflowName,
 		SourceFile:                params.SourceFile,
@@ -115,7 +126,7 @@ func (r *PostgresRepo) CreateRun(ctx context.Context, params domain.CreateRunPar
 
 	// Persist the correct RunActor now that the real run ID is known.
 	runActor := actor.WorkflowRef(dbRun.ID, params.WorkflowName)
-	if err := r.q.SetWorkflowRunActor(ctx, workflowdb.SetWorkflowRunActorParams{
+	if err := qtx.SetWorkflowRunActor(ctx, workflowdb.SetWorkflowRunActorParams{
 		RunActorKind:          string(runActor.Kind),
 		RunActorUserID:        pgtype.Int8{Int64: 0, Valid: false},
 		RunActorRoleKey:       runActor.RoleKey,
@@ -165,7 +176,7 @@ func (r *PostgresRepo) CreateRun(ctx context.Context, params domain.CreateRunPar
 			}
 		}
 
-		dbJob, err := r.q.CreateWorkflowJobRun(ctx, workflowdb.CreateWorkflowJobRunParams{
+		dbJob, err := qtx.CreateWorkflowJobRun(ctx, workflowdb.CreateWorkflowJobRunParams{
 			WorkflowRunID:     run.ID,
 			JobKey:            jd.JobKey,
 			DisplayName:       jd.DisplayName,
@@ -181,6 +192,10 @@ func (r *PostgresRepo) CreateRun(ctx context.Context, params domain.CreateRunPar
 		}
 		job := rowToJobRun(&dbJob)
 		jobs = append(jobs, job)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("commit workflow run tx: %w", err)
 	}
 
 	return run, jobs, nil

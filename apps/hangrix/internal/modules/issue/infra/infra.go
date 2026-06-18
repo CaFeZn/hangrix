@@ -17,8 +17,8 @@ import (
 
 	"github.com/hangrix/hangrix/pkg/actor"
 
-	actordomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/actor/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/database"
+	actordomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/actor/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/issue/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/issue/infra/issuedb"
 	repodomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/domain"
@@ -293,6 +293,15 @@ func (s *PostgresStore) LoadIndicators(ctx context.Context, issueIDs []int64, ca
 	for _, id := range mentionedIDs {
 		r := result[id]
 		r.HasAgentMention = true
+		result[id] = r
+	}
+	queuedIDs, err := s.q.ListQueuedAgentRunIssueIDs(ctx, issueIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list queued agent run ids: %w", err)
+	}
+	for _, id := range queuedIDs {
+		r := result[id]
+		r.HasQueuedAgentRun = true
 		result[id] = r
 	}
 	return result, nil
@@ -901,7 +910,6 @@ func (s *PostgresStore) MarkContributionMerged(ctx context.Context, id int64, me
 	}
 	return s.GetContribution(ctx, id)
 }
-
 
 func contributionFromGet(r issuedb.GetContributionRow) *domain.Contribution {
 	return buildContribution(

@@ -8,6 +8,7 @@ import {
   Diff,
   GitBranch,
   LogOut,
+  MessageSquare,
   Play,
   Rocket,
   Settings,
@@ -84,6 +85,7 @@ const repoItems = computed<NavItem[]>(() => {
   // Issues are available even on an empty repo — opening a placeholder
   // issue is a perfectly valid first action.
   items.push({ key: 'issues', to: `${base}/issues`, icon: CircleDot, label: t('repo.tabs2.issues') })
+  items.push({ key: 'chat', to: `${base}/chat`, icon: MessageSquare, label: t('repo.nav.chat') })
   // On an empty repo there are no refs to browse, nothing to compare, and
   // no useful settings — collapse the nav to issues only until the first
   // push lands.

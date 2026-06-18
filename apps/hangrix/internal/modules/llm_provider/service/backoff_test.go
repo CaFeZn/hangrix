@@ -71,10 +71,10 @@ func TestIsRetryableFailure(t *testing.T) {
 		code     int
 		expected bool
 	}{
-		{408, true}, {425, true}, {429, true},
+		{401, true}, {403, true}, {408, true}, {425, true}, {429, true},
 		{500, true}, {502, true}, {503, true}, {504, true}, {529, true},
 		{599, true},
-		{400, false}, {401, false}, {403, false}, {404, false}, {422, false},
+		{400, false}, {404, false}, {422, false},
 		{0, false}, {200, false},
 	}
 
@@ -83,5 +83,46 @@ func TestIsRetryableFailure(t *testing.T) {
 		if got != tt.expected {
 			t.Errorf("isRetryableFailure(%d) = %v, want %v", tt.code, got, tt.expected)
 		}
+	}
+}
+
+func TestNextBackoffForFailure_UsesHardCooldownForInvalidDirectCredential(t *testing.T) {
+	newStep, until := NextBackoffForFailure(
+		0,
+		"https://api.deepseek.com/v1",
+		401,
+		`upstream 401: {"error":{"message":"Authentication Fails, Your api key is invalid","type":"authentication_error","code":"invalid_request_error"}}`,
+	)
+
+	if newStep < hardCredentialBackoffMinStep {
+		t.Fatalf("newStep = %d, want >= %d", newStep, hardCredentialBackoffMinStep)
+	}
+
+	d := time.Until(until)
+	cap7d := 7 * 24 * time.Hour
+	if d < cap7d-tol {
+		t.Fatalf("duration = %v, want >= 7d", d)
+	}
+	if d > cap7d+tol {
+		t.Fatalf("duration = %v, want <= 7d+tol", d)
+	}
+}
+
+func TestNextBackoffForFailure_KeepsNormalCooldownForLocalProxy401(t *testing.T) {
+	newStep, until := NextBackoffForFailure(
+		0,
+		"http://host.docker.internal:18080",
+		401,
+		`upstream 401: {"error":{"message":"Authentication Fails, Your api key is invalid","type":"authentication_error","code":"invalid_request_error"}}`,
+	)
+
+	if newStep != 1 {
+		t.Fatalf("newStep = %d, want 1", newStep)
+	}
+
+	d := time.Until(until)
+	want := 60 * time.Second
+	if d < want-tol || d > want+tol {
+		t.Fatalf("duration = %v, want ~%v", d, want)
 	}
 }

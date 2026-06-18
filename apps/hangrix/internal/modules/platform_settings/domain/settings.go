@@ -7,6 +7,7 @@ package domain
 import (
 	"context"
 	"errors"
+	"strconv"
 	"time"
 )
 
@@ -28,6 +29,35 @@ type Definition struct {
 	Key         string
 	Default     string
 	Description string
+	Type        ValueType
+}
+
+// ValueType controls admin validation and typed getters for registered keys.
+type ValueType string
+
+const (
+	ValueTypeDuration ValueType = "duration"
+	ValueTypeBool     ValueType = "bool"
+	ValueTypeInt      ValueType = "int"
+	ValueTypeString   ValueType = "string"
+)
+
+const (
+	SettingFirepowerEnabled        = "firepower.enabled"
+	SettingRunnerMaxTasksPerPoll   = "runner.max_tasks_per_poll"
+	SettingFirepowerRunnerMaxTasks = "firepower.runner_max_tasks_per_poll"
+	SettingChatGPTFastMode         = "llm.chatgpt_fast_mode"
+	FirepowerPreferredModel        = "gpt-5.5"
+	DefaultRunnerMaxTasksPerPoll   = 64
+	DefaultFirepowerRunnerMaxTasks = 256
+)
+
+// NormalizedType returns duration for legacy definitions that omit Type.
+func (d Definition) NormalizedType() ValueType {
+	if d.Type == "" {
+		return ValueTypeDuration
+	}
+	return d.Type
 }
 
 // Registry is the set of known keys with their defaults. Keys not in
@@ -53,6 +83,18 @@ func (r *Registry) Lookup(key string) (Definition, bool) {
 	return d, ok
 }
 
+// Definitions returns a copy of all registered definitions.
+func (r *Registry) Definitions() []Definition {
+	if r == nil {
+		return nil
+	}
+	out := make([]Definition, 0, len(r.defs))
+	for _, d := range r.defs {
+		out = append(out, d)
+	}
+	return out
+}
+
 // Store is the persistence + cache abstraction consumed by the reaper
 // and admin handlers. Every read goes through a short TTL cache; writes
 // invalidate the cache so the next read picks up the fresh value.
@@ -68,10 +110,26 @@ type Store interface {
 	// success; returns an error on parse failure.
 	GetDuration(ctx context.Context, key string) (time.Duration, error)
 
+	// GetBool parses the stored value as a bool, falling back to the
+	// registered default when the row is missing.
+	GetBool(ctx context.Context, key string) (bool, error)
+
+	// GetInt parses the stored value as an int, falling back to the
+	// registered default when the row is missing.
+	GetInt(ctx context.Context, key string) (int, error)
+
 	// Set upserts a key-value pair. description is optional metadata
 	// (only persisted on INSERT, ignored on UPDATE).
 	Set(ctx context.Context, key, value, description string) error
 
 	// List returns every known setting. Useful for admin UI.
 	List(ctx context.Context) ([]Setting, error)
+}
+
+func ParseBoolValue(v string) (bool, error) {
+	return strconv.ParseBool(v)
+}
+
+func ParseIntValue(v string) (int, error) {
+	return strconv.Atoi(v)
 }

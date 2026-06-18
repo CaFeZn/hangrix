@@ -51,7 +51,7 @@ container:                        # host 声明的容器环境
 llm:                              # team 默认 LLM（可选；省略走 admin 配的 platform default）
   model: claude-opus-4-8          # 必须命中已定义的模型/模型组（provider.allowed_models 路由已废弃）
   thinking: adaptive              # 思考模式：adaptive (Claude 4.6+，唯一被 Opus 4.7/4.8 接受的模式) / enabled (legacy budget_tokens) / disabled
-  reasoning_effort: high          # 努力档：low/medium/high/xhigh/max；Anthropic 走 output_config.effort (4.6+)，其它适配器原样透传
+  reasoning_effort: high          # 努力档：low/medium/high/xhigh/max；Anthropic 走 output_config.effort (4.6+)，DeepSeek 归一化到 high/max
   max_context_tokens: 200000      # 最大上下文 token（agent 端 prompt+历史的上限）；0 = 不约束
   max_output_tokens: 8000         # 最大输出 token（单次调用 completion 上限）；0 = 上游默认
 
@@ -142,8 +142,8 @@ issues:
 - **prompt（正文）** —— role 的提示词就是 `.hangrix/agents/<role>.md` 中 front matter 之后的 Markdown 正文。正文不能为空。跨 host 仓库复用某个 role，直接复制它的 `.md` 文件即可。
 - **`llm:`** —— team 级 + per-role 两层，**按字段合并**：role 写了哪个字段就覆盖哪个字段，没写的字段继承 team；team 没设的字段走 platform default（即 adapter / upstream 的内置默认）。字段：
   - `model` —— team 级必填，必须命中一个已定义的模型/模型组（`provider.allowed_models` 路由已废弃）；role 级可省略（= 继承 team）。
-  - `reasoning_effort` —— 努力档，任意字符串（parser 不校验枚举，新模型可直接填新值）。规范值 `minimal | low | medium | high | xhigh | max`。**Anthropic adapter**：当 `thinking: adaptive` 或未声明 `thinking` 时落在 `output_config.effort`（Claude 4.6+ 的统一旋钮，同时约束思考深度和总 token 花费，包括工具调用）；当 `thinking: enabled` 时走 legacy 翻译，映射到 `thinking.budget_tokens`（low→1024 / medium→4096 / high+→16384，同时 drop temperature、bump `max_output_tokens` 防 400）。**openai-compat** 原样透传。其它非空字符串一律透传，上游决定接受或拒绝。空字符串等同省略。
-  - `thinking` —— Anthropic 扩展思考模式，三选一：`adaptive`（Claude 4.6+ 推荐写法，**Opus 4.7/4.8 唯一支持的模式**——线上 `thinking: {type: adaptive}`，模型自行决定每一回合是否推理，由 `reasoning_effort` 引导深度）；`enabled`（legacy 手动模式，`thinking: {type: enabled, budget_tokens: N}`，N 由 `reasoning_effort` 计算，适用 Claude 4.5/4.6；Opus 4.7+ 会 400）；`disabled`（与省略等价，关闭扩展思考）。**仅 Anthropic 适配器消费**；其它适配器忽略。无论 `adaptive` 还是 `enabled`，adapter 都会 drop temperature（4.7+ 也 400 非默认 temperature）。
+  - `reasoning_effort` —— 努力档，任意字符串（parser 不校验枚举，新模型可直接填新值）。规范值 `minimal | low | medium | high | xhigh | max`。**Anthropic adapter**：当 `thinking: adaptive` 或未声明 `thinking` 时落在 `output_config.effort`（Claude 4.6+ 的统一旋钮，同时约束思考深度和总 token 花费，包括工具调用）；当 `thinking: enabled` 时走 legacy 翻译，映射到 `thinking.budget_tokens`（low→1024 / medium→4096 / high+→16384，同时 drop temperature、bump `max_output_tokens` 防 400）。**DeepSeek adapter**：`minimal/low/medium → high`，`xhigh/max → max`，空字符串省略。**openai-compat** 原样透传。其它非空字符串一律透传，上游决定接受或拒绝。空字符串等同省略。
+  - `thinking` —— Anthropic 扩展思考模式，三选一：`adaptive`（Claude 4.6+ 推荐写法，**Opus 4.7/4.8 唯一支持的模式**——线上 `thinking: {type: adaptive}`，模型自行决定每一回合是否推理，由 `reasoning_effort` 引导深度）；`enabled`（legacy 手动模式，`thinking: {type: enabled, budget_tokens: N}`，N 由 `reasoning_effort` 计算，适用 Claude 4.5/4.6；Opus 4.7+ 会 400）；`disabled`（与省略等价，关闭扩展思考）。**DeepSeek adapter** 会把 `adaptive/enabled/disabled` 映射到 `thinking.type`；**Anthropic adapter** 按上述模式消费；其它适配器忽略。无论 `adaptive` 还是 `enabled`，Anthropic adapter 都会 drop temperature（4.7+ 也 400 非默认 temperature）。
   - `max_context_tokens` —— Agent 打包 prompt+对话历史时的上限（>= 0，0 = 不约束）。LLM proxy 不强制；由 agent runtime 在送进上游前裁剪。
   - `max_output_tokens` —— 单次 completion 的输出预算（>= 0，0 = 上游默认）。Anthropic 必填 `max_tokens` 由 adapter 兜底到 4096；legacy `thinking: enabled` 路径下若小于 `budget_tokens + 4096` 会自动 bump。
   Spawn session 时把 host.LLM 和 role.LLM 按字段 merge 出 resolved 视图缓存到 session 元数据，runner 注入 env 时直接读。所以只想改 `model` 而保留 team 的 `max_context_tokens` / `reasoning_effort` / `thinking`，role 里只写一行 `model: …` 就行，不必复制整块。
