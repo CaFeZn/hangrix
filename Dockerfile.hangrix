@@ -14,27 +14,35 @@ RUN npm install -g pnpm@10.33.2 --registry=https://registry.npmmirror.com \
 
 FROM golang:1.26 AS go-build
 
+ARG TARGETOS=linux
+ARG TARGETARCH
+
 WORKDIR /src
 ENV GOPROXY=https://goproxy.cn,direct
 
 COPY . .
 COPY --from=web-build /src/apps/hangrix/internal/web/dist ./apps/hangrix/internal/web/dist
 
-RUN mkdir -p apps/hangrix-runner/internal/agentbin/payload \
+RUN set -eux; \
+  target_os="${TARGETOS:-linux}"; \
+  target_arch="${TARGETARCH:-$(go env GOARCH)}"; \
+  mkdir -p apps/hangrix-runner/internal/agentbin/payload \
     apps/hangrix/internal/modules/runner/binaries/payload \
-    /out \
-  && rm -f apps/hangrix/internal/modules/runner/binaries/payload/hangrix-runner \
+    /out; \
+  rm -f apps/hangrix/internal/modules/runner/binaries/payload/hangrix-runner \
     apps/hangrix/internal/modules/runner/binaries/payload/hangrix-agent \
     apps/hangrix/internal/modules/runner/binaries/payload/hangrix-runner_* \
-    apps/hangrix-runner/internal/agentbin/payload/hangrix-agent \
-  && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
-    -o apps/hangrix-runner/internal/agentbin/payload/hangrix-agent \
-    ./apps/hangrix-agent/cmd/hangrix-agent \
-  && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
-    -o apps/hangrix/internal/modules/runner/binaries/payload/hangrix-runner_linux_amd64 \
-    ./apps/hangrix-runner/cmd/hangrix-runner \
-  && rm -f apps/hangrix-runner/internal/agentbin/payload/hangrix-agent \
-  && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+    apps/hangrix-runner/internal/agentbin/payload/hangrix-agent; \
+  for arch in amd64 arm64; do \
+    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+      -o apps/hangrix-runner/internal/agentbin/payload/hangrix-agent \
+      ./apps/hangrix-agent/cmd/hangrix-agent; \
+    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+      -o "apps/hangrix/internal/modules/runner/binaries/payload/hangrix-runner_linux_${arch}" \
+      ./apps/hangrix-runner/cmd/hangrix-runner; \
+  done; \
+  rm -f apps/hangrix-runner/internal/agentbin/payload/hangrix-agent; \
+  CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath \
     -o /out/hangrix \
     ./apps/hangrix/cmd/hangrix
 

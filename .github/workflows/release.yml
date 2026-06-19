@@ -1,12 +1,12 @@
 # Release: triggered by a semver-shaped tag push (e.g. `v0.4.0`).
-# Cross-compiles every Go binary in the workspace for linux/amd64,
+# Cross-compiles every Go binary in the workspace for linux/amd64 and
+# linux/arm64,
 # names each artefact `<binary>_<goos>_<goarch>`, and attaches them
 # all to a fresh GitHub Release for the tag.
 #
-# Linux/amd64 only: hangrix-agent runs inside a docker container, so
-# non-linux agent builds are dead weight. hangrix and hangrix-runner
-# are likewise intended for linux deploys. arm64 was dropped to halve
-# CI time; add it back to build-embed-binaries.mjs + here if needed.
+# Linux-only: hangrix-agent runs inside a docker container, so non-linux
+# agent builds are dead weight. hangrix and hangrix-runner are intended
+# for linux deploys; arm64 is shipped for OrangePi and similar targets.
 #
 # Single source of truth for the embed chain is
 # apps/hangrix/scripts/build-embed-binaries.mjs — this workflow drives
@@ -88,6 +88,17 @@ jobs:
             -o "../../dist/hangrix_linux_amd64" \
             ./cmd/hangrix
 
+      - name: Build hangrix (linux/arm64)
+        working-directory: apps/hangrix
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: '0'
+        run: |
+          go build -trimpath -ldflags='-s -w' \
+            -o "../../dist/hangrix_linux_arm64" \
+            ./cmd/hangrix
+
       - name: List release assets
         run: ls -la dist/
 
@@ -100,5 +111,7 @@ jobs:
           fail_on_unmatched_files: true
           # Final asset set:
           #   hangrix_linux_amd64        — server (incl. runner + agent)
+          #   hangrix_linux_arm64        — server (incl. runner + agent)
           #   hangrix-runner_linux_amd64 — standalone runner (agent embedded)
+          #   hangrix-runner_linux_arm64 — standalone runner (agent embedded)
           files: dist/*

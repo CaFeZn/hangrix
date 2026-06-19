@@ -1,12 +1,12 @@
 # Release workflow: triggered by a semver-shaped tag push (e.g. v0.4.0).
-# Cross-compiles every Go binary in the workspace for linux/amd64,
+# Cross-compiles every Go binary in the workspace for linux/amd64 and
+# linux/arm64,
 # creates a draft release via the platform API, uploads all dist
 # assets, and publishes the release.
 #
-# Linux/amd64 only: hangrix-agent runs inside a docker container, so
-# non-linux agent builds are dead weight. hangrix and hangrix-runner
-# are likewise intended for linux deploys. arm64 was dropped to halve
-# CI time; add it back to build-embed-binaries.mjs + here if needed.
+# Linux-only: hangrix-agent runs inside a docker container, so non-linux
+# agent builds are dead weight. hangrix and hangrix-runner are intended
+# for linux deploys; arm64 is shipped for OrangePi and similar targets.
 #
 # The embed chain (build-embed-binaries.mjs → copy-web-dist.mjs) is the
 # same single source of truth as .github/workflows/release.yml.
@@ -28,7 +28,7 @@ jobs:
       - name: Generate web bundle
         run: pnpm --filter web run generate
 
-      # Build the embed payload exactly once: hangrix-agent for the
+      # Build the embed payload exactly once: hangrix-agent for each
       # supported linux arch, then hangrix-runner for the same arch
       # (with the agent embedded inside it).
       - name: Build embed payload
@@ -58,6 +58,17 @@ jobs:
             -o "../../dist/hangrix_linux_amd64" \
             ./cmd/hangrix
 
+      - name: Build hangrix (linux/arm64)
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: '0'
+        dir: apps/hangrix
+        run: |
+          go build -trimpath -ldflags='-s -w' \
+            -o "../../dist/hangrix_linux_arm64" \
+            ./cmd/hangrix
+
       # List the staged assets and surface the triggering tag as a step
       # output, so the built-in release step can reference it. `with.tag`
       # only interpolates ${{ steps.<id>.outputs.<key> }} — not shell env —
@@ -77,4 +88,6 @@ jobs:
           draft: false
           assets:
             - dist/hangrix_linux_amd64
+            - dist/hangrix_linux_arm64
             - dist/hangrix-runner_linux_amd64
+            - dist/hangrix-runner_linux_arm64

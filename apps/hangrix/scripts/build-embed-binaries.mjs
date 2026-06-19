@@ -18,14 +18,15 @@
 //   payload/.keep
 //   payload/.gitignore
 //   payload/hangrix-runner_linux_amd64
+//   payload/hangrix-runner_linux_arm64
 //
 // and the embedded runner already has its matching agent inside it.
 // The server itself ships no `hangrix-agent` anymore — that path went
 // away when the runner started carrying its own agent.
 //
-// Targets are linux/amd64 only. linux-only because hangrix-agent only
-// ever runs inside a docker container; amd64-only because that's the
-// single arch we ship today (arm64 was dropped to halve CI time).
+// Targets are linux/amd64 and linux/arm64. linux-only because hangrix-agent
+// only ever runs inside a docker container; arm64 is needed for OrangePi and
+// other small-board deployments.
 
 import { execSync } from "node:child_process";
 import { mkdirSync, existsSync, rmSync, readdirSync } from "node:fs";
@@ -44,10 +45,9 @@ const serverEmbedDir = resolve(
   "../internal/modules/runner/binaries/payload",
 );
 
-// Linux/amd64 only. arm64 was dropped to halve CI build time; add it
-// back here if/when an arm64 deploy target lands.
 const platforms = [
   { goos: "linux", goarch: "amd64" },
+  { goos: "linux", goarch: "arm64" },
 ];
 
 mkdirSync(agentEmbedDir, { recursive: true });
