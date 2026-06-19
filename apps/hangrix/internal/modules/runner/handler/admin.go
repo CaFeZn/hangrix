@@ -34,7 +34,6 @@ import (
 	repodomain "github.com/hangrix/hangrix/apps/hangrix/internal/modules/repo/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/runner/domain"
 	"github.com/hangrix/hangrix/apps/hangrix/internal/modules/runner/service"
-	"github.com/hangrix/hangrix/pkg/actor"
 	"github.com/hangrix/hangrix/pkg/cryptobox"
 )
 
@@ -191,12 +190,10 @@ func (h *AdminHandler) createRunner(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "admin path only supports platform runners")
 		return
 	}
-	var actorID int64
-	if caller != nil && h.actorResolver != nil {
-		resolved, err := h.actorResolver.From(r.Context(), actor.UserRef(caller.ID, ""))
-		if err == nil {
-			actorID = resolved.ActorID
-		}
+	actorID, err := currentUserActorID(r.Context(), h.actorResolver, caller)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	in := domain.CreateRunnerInput{Name: req.Name, Visibility: v, ActorID: actorID}
 	if err := in.Validate(); err != nil {
@@ -400,12 +397,10 @@ func toPublicSession(s *domain.AgentSession) publicSession {
 // will receive it over its own authenticated channel.
 func (h *AdminHandler) createSession(w http.ResponseWriter, r *http.Request) {
 	caller, _ := authdomain.UserFromRequest(r)
-	var createdByActorID int64
-	if caller != nil && h.actorResolver != nil {
-		resolved, err := h.actorResolver.From(r.Context(), actor.UserRef(caller.ID, ""))
-		if err == nil {
-			createdByActorID = resolved.ActorID
-		}
+	createdByActorID, err := currentUserActorID(r.Context(), h.actorResolver, caller)
+	if err != nil {
+		httpx.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	runnerID, ok := httpx.ParseID(w, chi.URLParam(r, "id"))

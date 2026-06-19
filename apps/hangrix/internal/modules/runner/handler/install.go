@@ -2,8 +2,8 @@
 //
 //	GET /install/runner.sh
 //	    - templated bash one-liner installer. Refuses to install on
-//	      anything other than linux/amd64 (the only arch the project
-//	      ships today) and downloads the matching embedded asset.
+//	      anything other than linux/amd64 or linux/arm64 and downloads
+//	      the matching embedded asset.
 //	GET /install/{asset-name}
 //	    - serves an embedded runner binary keyed by its asset name,
 //	      e.g. `hangrix-runner_linux_amd64`. The same endpoint answers
@@ -68,8 +68,9 @@ SERVICE_STATE_DIR="${HANGRIX_RUNNER_STATE_DIR:-/var/lib/hangrix}"
 OS="linux"
 case "$(uname -m 2>/dev/null || echo unknown)" in
   x86_64|amd64)   ARCH="amd64" ;;
+  aarch64|arm64)  ARCH="arm64" ;;
   *)
-    echo "error: unsupported architecture $(uname -m). Hangrix only ships linux/amd64." >&2
+    echo "error: unsupported architecture $(uname -m). Hangrix ships linux/amd64 and linux/arm64." >&2
     exit 2
     ;;
 esac
