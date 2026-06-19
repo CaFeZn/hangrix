@@ -84,7 +84,7 @@ func ExpandHeaders(serverName string, headers map[string]string) (map[string]str
 	}
 	out := make(map[string]string, len(headers))
 	for k, v := range headers {
-		expanded, err := expandOne(serverName, v)
+		expanded, err := expandOne(serverName, "header", v)
 		if err != nil {
 			return nil, err
 		}
@@ -93,7 +93,12 @@ func ExpandHeaders(serverName string, headers map[string]string) (map[string]str
 	return out, nil
 }
 
-func expandOne(serverName, raw string) (string, error) {
+// ExpandURL replaces ${env:VAR} references in a remote MCP server URL.
+func ExpandURL(serverName, raw string) (string, error) {
+	return expandOne(serverName, "url", raw)
+}
+
+func expandOne(serverName, field, raw string) (string, error) {
 	missing := envVarRe.FindAllStringSubmatch(raw, -1)
 	if len(missing) == 0 {
 		return raw, nil
@@ -103,7 +108,7 @@ func expandOne(serverName, raw string) (string, error) {
 		varName := m[1]
 		val, ok := os.LookupEnv(varName)
 		if !ok {
-			return "", fmt.Errorf("mcp server %q: header references ${env:%s} which is not set", serverName, varName)
+			return "", fmt.Errorf("mcp server %q: %s references ${env:%s} which is not set", serverName, field, varName)
 		}
 		replaced = strings.Replace(replaced, m[0], val, 1)
 	}

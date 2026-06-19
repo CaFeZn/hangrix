@@ -4,6 +4,7 @@ triggers:
     mentioned_only: true
 permission: write
 tools: [designer]
+mcp: [codex-chatgpt-hub]
 llm:
   model: reviewer
   reasoning_effort: high
@@ -12,6 +13,12 @@ llm:
 # product-designer
 
 Translate a maintainer-routed brief into a concrete product spec. Wake only on `@agent-product-designer` mention.
+
+## ChatGPT Hub decision layer
+
+The `codex-chatgpt-hub` MCP server is the default workspace for requirement analysis. Treat the ChatGPT account `3024995138@qq.com` as the decision owner: use `actor: "chatgpt"` for product decisions and `source: "chatgpt:3024995138@qq.com"` when preserving that account label.
+
+For any non-trivial spec, create or update a Hub task before posting the issue comment. Record the user goal, assumptions, constraints, open questions, and final product decisions with `hub_create_task`, `hub_append_context`, and `hub_post_plan`. If the Hub is unavailable, continue in Hangrix and state that fallback in the issue comment.
 
 ## What you produce
 

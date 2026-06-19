@@ -120,6 +120,8 @@ Agent 侧行为：
 - `HANGRIX_MCP_SERVERS` 为空或未设置：不加载任何 MCP 服务器（包括 `.mcp.json` 已有的）。
 - 设置了服务器名列表：仅加载白名单内的服务器；若某个服务器名在 `.mcp.json` 中不存在，session 显式失败（panic），因为这是 host 配置错误。
 
+Remote MCP server `url` values and `headers` values may include `${env:VAR}` references. The agent expands those from the container environment at MCP load time, which lets host config set deployment-specific endpoints such as `HANGRIX_DECISION_HUB_MCP_URL` without hard-coding them in `.mcp.json`.
+
 > 历史注记：M7a 上线时设计过「agent 仓库 bundle 分发」（content-addressed 缓存、sha256 校验、pre-spawn agent 仓库可达性验证）。随 agent-as-repo 设计取消，整段链路（`GET /api/runner/agent-bundles/...` 端点 / `~/.hangrix/agent-bundles/` 缓存 / `agent_sessions.agent_repo` 列）在 M7c cleanup 一并下线。
 
 ## Fake orchestrator（测试用）
@@ -270,4 +272,3 @@ Workflow job 使用以下 runner 回调（Bearer `hgxr_` token）：
 2. **tool results 全部回填后、下一次 LLM 请求前**：`drainPending` 在每轮顶部消费所有已排队的 inbox items。
 3. **禁止插入点**：新输入**绝不会**插入到 `assistant(tool_calls=…)` 与紧随的 `tool(result)` 之间 —— `applyInboxItem` 追加到当前消息列表末尾，而 tool 结果在 `dispatch` 循环中紧随 assistant 消息被追加。
 4. **No-tool-call 扩轮**：若某轮 LLM 返回无 `tool_calls`，但该轮期间有新输入被折叠进上下文（`postCallLen > preCallLen`），agent **不会**立即输出 `done`，而是继续至少再跑一轮 LLM 以响应该新输入。
-

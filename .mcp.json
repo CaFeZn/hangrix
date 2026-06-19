@@ -11,6 +11,10 @@
     "context7": {
       "type": "http",
       "url": "https://mcp.context7.com/mcp"
+    },
+    "codex-chatgpt-hub": {
+      "type": "http",
+      "url": "${env:HANGRIX_DECISION_HUB_MCP_URL}"
     }
   }
 }

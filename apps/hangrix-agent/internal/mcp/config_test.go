@@ -155,6 +155,26 @@ func TestExpandHeaders_MultipleVars(t *testing.T) {
 	}
 }
 
+func TestExpandURL_Simple(t *testing.T) {
+	os.Setenv("MCP_URL", "http://10.42.0.1:3333/mcp")
+	defer os.Unsetenv("MCP_URL")
+
+	out, err := ExpandURL("hub", "${env:MCP_URL}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out != "http://10.42.0.1:3333/mcp" {
+		t.Fatalf("expected expanded URL, got %q", out)
+	}
+}
+
+func TestExpandURL_MissingVar(t *testing.T) {
+	os.Unsetenv("MISSING_MCP_URL")
+	if _, err := ExpandURL("hub", "${env:MISSING_MCP_URL}"); err == nil {
+		t.Fatal("expected error for missing env var")
+	}
+}
+
 func TestConvertSchema_Basic(t *testing.T) {
 	tool := mcpgo.Tool{
 		Name:        "test",

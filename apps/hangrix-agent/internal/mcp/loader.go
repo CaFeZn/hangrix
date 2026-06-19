@@ -98,6 +98,10 @@ func loadStdio(ctx context.Context, name string, s ServerDef) ([]local.Tool, *mc
 }
 
 func loadHTTP(ctx context.Context, name string, s ServerDef, httpClient *http.Client) ([]local.Tool, *mcpclient.Client, error) {
+	url, err := ExpandURL(name, s.URL)
+	if err != nil {
+		return nil, nil, err
+	}
 	headers, err := ExpandHeaders(name, s.Headers)
 	if err != nil {
 		return nil, nil, err
@@ -109,7 +113,7 @@ func loadHTTP(ctx context.Context, name string, s ServerDef, httpClient *http.Cl
 	if len(headers) > 0 {
 		opts = append(opts, mcptransport.WithHTTPHeaders(headers))
 	}
-	c, err := mcpclient.NewStreamableHttpClient(s.URL, opts...)
+	c, err := mcpclient.NewStreamableHttpClient(url, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create http client: %w", err)
 	}
@@ -126,6 +130,10 @@ func loadHTTP(ctx context.Context, name string, s ServerDef, httpClient *http.Cl
 }
 
 func loadSSE(ctx context.Context, name string, s ServerDef, httpClient *http.Client) ([]local.Tool, *mcpclient.Client, error) {
+	url, err := ExpandURL(name, s.URL)
+	if err != nil {
+		return nil, nil, err
+	}
 	headers, err := ExpandHeaders(name, s.Headers)
 	if err != nil {
 		return nil, nil, err
@@ -137,7 +145,7 @@ func loadSSE(ctx context.Context, name string, s ServerDef, httpClient *http.Cli
 	if len(headers) > 0 {
 		opts = append(opts, mcptransport.WithHeaders(headers))
 	}
-	c, err := mcpclient.NewSSEMCPClient(s.URL, opts...)
+	c, err := mcpclient.NewSSEMCPClient(url, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create sse client: %w", err)
 	}

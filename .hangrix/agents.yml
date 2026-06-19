@@ -20,6 +20,7 @@ container:
   entrypoint: ["/init"]
   env:
     NODE_ENV: development
+    HANGRIX_DECISION_HUB_MCP_URL: "http://10.42.0.1:3333/mcp"
   volumes:
     - { name: /var/run/docker.sock, mount: /var/run/docker.sock }
     - { name: pnpm-store, mount: /workspace/.pnpm-store }

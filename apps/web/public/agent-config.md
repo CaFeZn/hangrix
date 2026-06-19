@@ -137,6 +137,7 @@ issues:
 - **`tools:`**（agent front matter）—— 该 role 引用的工具规则名列表（来自 agents.yml 的 `tools:` 映射）。role 能看到的**平台**工具 = 所引用规则的 glob 模式并集；其余平台工具从 LLM tool schema 中隐藏。**由 agent 侧强制（schema 隐藏），服务端不校验**——服务端只认 `permission`。所以 `tools` 塑形「这个角色该用哪些平台工具」，`permission` 才是安全边界。省略 = 不给任何平台工具。**本地工具（read/write/edit/glob/grep/bash/webfetch）永远可用，不受 `tools` 限制。** 引用了未定义的规则名时加载失败。
 - **`tools:`**（agents.yml team 级，见上例）—— 可复用规则映射：规则名 → 平台工具名 glob 白名单（`*` 通配，如 `issue_*`、`contribution_*`、`*`）。**仅平台工具、仅白名单。** agent 多了用规则避免每个文件重复罗列工具；多个 role 共享同一规则即可。
 - **`mcp:`** —— 可选，MCP 服务器白名单。字符串数组，每项对应仓库根目录 `.mcp.json` 中 `mcpServers` 的一个 key。**缺失或空数组时该 role 不加载任何 MCP 服务器**；非空时仅加载列出的服务器。引用了 `.mcp.json` 中不存在的 server 名时 session 明确失败并报告缺失的 server 名。`mcp:` 是独立的 MCP 白名单，不复用 `tools` 的平台工具规则。
+  Remote MCP server `url` values and `headers` values may include `${env:VAR}` references. The agent expands those from the role container environment when loading `.mcp.json`, so deployment-specific endpoints can live in `container.env` or repo variables instead of being hard-coded in `.mcp.json`.
 - **`scope.paths:`** —— 软约束（写进 role 的初始 prompt 让 dispatcher 知道分派给谁），不在 pre-receive 强制。
 - **prompt（正文）** —— role 的提示词就是 `.hangrix/agents/<role>.md` 中 front matter 之后的 Markdown 正文。正文不能为空。跨 host 仓库复用某个 role，直接复制它的 `.md` 文件即可。
 - **`llm:`** —— team 级 + per-role 两层，**按字段合并**：role 写了哪个字段就覆盖哪个字段，没写的字段继承 team；team 没设的字段走 platform default（即 adapter / upstream 的内置默认）。字段：
