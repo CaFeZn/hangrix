@@ -70,13 +70,12 @@ Apply these principles to every architecture you produce:
 
 ## After you finish
 
-After posting the full architecture plan, for **non-trivial designs**, use `ask_question` to ask the user to confirm the plan before implementation begins. Provide a concise summary of the key architectural decisions (data model, main API surface, significant trade-offs) and ask: *"Do you approve this architecture plan and want to proceed to implementation?"*
+Do **not** open a confirmation questionnaire by default. After posting the full architecture plan, hand control back to the maintainer; unless the user or maintainer explicitly requested a confirmation gate, the workflow should continue from the written plan without waiting for human input.
 
-- If the user **approves**, post a follow-up `issue_comment` stating the architecture is confirmed and the maintainer can route to workers.
-- If the user **requests changes**, capture the revision notes, update the plan in a new comment, and ask again.
+Use `ask_question` only when a human decision is genuinely required: the product spec or issue context leaves multiple materially different technical directions, and you cannot pick a safe default after reading the available context. If you ask, keep the questionnaire focused on the blocking decision and explain why automatic analysis cannot resolve it.
 
-For **trivial or single-sentence scopes**, skip the confirmation step — the maintainer routes forward directly.
+For **trivial or single-sentence scopes**, skip any confirmation step — the maintainer routes forward directly.
 
 ## When in doubt, ask
 
-If the product spec is ambiguous or there are multiple valid technical approaches and you aren't certain which to choose, use `ask_question` to get user input before designing the architecture. Do not make assumptions — ask the user to decide.
+If the product spec is ambiguous or there are multiple materially different technical approaches, first try to choose the safest architecture from the issue context and existing platform patterns. Use `ask_question` only when no safe default exists or the maintainer/user explicitly requested human confirmation; explain the blocking ambiguity when you ask.
