@@ -64,7 +64,7 @@ func (h *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if f, err := h.fsys.Open(path); err == nil {
 			f.Close()
 			if path == "index.html" {
-				w.Header().Set("Cache-Control", "no-store")
+				setHTMLDocumentHeaders(w)
 			}
 			h.fileServer.ServeHTTP(w, r)
 			return
@@ -74,9 +74,16 @@ func (h *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	w.Header().Set("Cache-Control", "no-store")
+	setHTMLDocumentHeaders(w)
 	r.URL.Path = "/"
 	h.fileServer.ServeHTTP(w, r)
+}
+
+func setHTMLDocumentHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Add("Vary", "User-Agent")
+	w.Header().Add("Vary", "Sec-CH-UA-Mobile")
+	w.Header().Add("Vary", "Cookie")
 }
 
 func isBuildAssetPath(path string) bool {
@@ -135,7 +142,7 @@ func shouldServeMobile(path string, r *http.Request) bool {
 	if r.URL.Query().Get("mobile") == "1" || path == "m" || path == "m/" {
 		return true
 	}
-	if !isMobileUA(requestUA(r)) {
+	if !isMobileRequest(r) {
 		return false
 	}
 	if !wantsHTMLDocument(r) || isBuildAssetPath(path) {
@@ -174,6 +181,16 @@ func requestUA(r *http.Request) string {
 	return strings.TrimSpace(r.Header.Get("X-Original-User-Agent"))
 }
 
+func isMobileRequest(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-CH-UA-Mobile"))) {
+	case "?1", "1", "true":
+		return true
+	case "?0", "0", "false":
+		return false
+	}
+	return isMobileUA(requestUA(r))
+}
+
 func isMobileUA(ua string) bool {
 	ua = strings.ToLower(ua)
 	if ua == "" {
@@ -187,7 +204,7 @@ func isMobileUA(ua string) bool {
 }
 
 func serveMobile(w http.ResponseWriter) {
-	w.Header().Set("Cache-Control", "no-store")
+	setHTMLDocumentHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write([]byte(mobileHTML))
 }

@@ -34,24 +34,31 @@ function patchHtmlEntry(file) {
     /<script type="module" src="([^"]+)" crossorigin><\/script>/,
     (_, srcPath) => `<script type="module">
 const __hangrixEntry = ${JSON.stringify(srcPath)};
-const __hangrixDiag = (reason, error) => {
+const __hangrixEscape = (value) => String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const __hangrixUrlWith = (params) => {
+  const url = new URL(location.href);
+  Object.keys(params).forEach((key) => {
+    if (params[key] == null) url.searchParams.delete(key);
+    else url.searchParams.set(key, params[key]);
+  });
+  return url.toString();
+};
+const __hangrixLoadFailure = (reason, error) => {
   const body = document.body || document.documentElement;
-  if (!body || document.getElementById('__hangrix_diag')) return;
-  const pre = document.createElement('pre');
-  pre.id = '__hangrix_diag';
-  pre.style.cssText = 'position:fixed;z-index:2147483647;inset:0;margin:0;padding:14px;overflow:auto;background:#111827;color:#f9fafb;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;';
+  if (!body || document.getElementById('__hangrix_load_failure')) return;
   const scripts = [].map.call(document.scripts, (s) => s.src || '[inline]').join('\\n');
   const links = [].map.call(document.querySelectorAll('link[href]'), (s) => s.rel + ': ' + s.href).join('\\n');
   const details = error && (error.stack || error.message || String(error)) || '';
-  pre.textContent =
-    'Hangrix mobile diagnostic\\n' +
-    'reason: ' + reason + '\\n' +
-    'url: ' + location.href + '\\n' +
-    'ua: ' + navigator.userAgent + '\\n' +
-    'error: ' + details + '\\n\\n' +
-    'scripts:\\n' + scripts + '\\n\\n' +
-    'links:\\n' + links;
-  body.appendChild(pre);
+  const debug = new URLSearchParams(location.search).has('hangrix_diag')
+    ? '<pre style="margin:14px 0 0;max-height:180px;overflow:auto;border:1px solid #27272a;border-radius:8px;padding:10px;background:#09090b;color:#d4d4d8;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word;">reason: ' + __hangrixEscape(reason) + '\\nurl: ' + __hangrixEscape(location.href) + '\\nua: ' + __hangrixEscape(navigator.userAgent) + '\\nerror: ' + __hangrixEscape(details) + '\\n\\nscripts:\\n' + __hangrixEscape(scripts) + '\\n\\nlinks:\\n' + __hangrixEscape(links) + '</pre>'
+    : '';
+  const panel = document.createElement('div');
+  panel.id = '__hangrix_load_failure';
+  panel.style.cssText = 'position:fixed;z-index:2147483647;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:#09090b;color:#fafafa;font:14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;';
+  panel.innerHTML = '<div style="width:min(520px,100%);border:1px solid #27272a;border-radius:12px;background:#111113;padding:20px;box-shadow:0 20px 60px rgba(0,0,0,.35)"><h1 style="margin:0 0 8px;font-size:20px;line-height:1.25">Hangrix 页面加载失败</h1><p style="margin:0 0 16px;color:#a1a1aa">页面资源可能还在更新或网络请求被中断。先刷新一次；如果仍失败，可以临时打开轻量版。</p><div style="display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(120px,1fr))"><button id="__hangrix_retry" style="height:40px;border:1px solid #fafafa;border-radius:8px;background:#fafafa;color:#09090b;font-weight:650;cursor:pointer">重新加载</button><a style="height:40px;border:1px solid #3f3f46;border-radius:8px;color:#fafafa;text-decoration:none;display:flex;align-items:center;justify-content:center" href="' + __hangrixEscape(__hangrixUrlWith({ desktop: '1', mobile: null, v: Date.now() })) + '">强制桌面版</a><a style="height:40px;border:1px solid #3f3f46;border-radius:8px;color:#fafafa;text-decoration:none;display:flex;align-items:center;justify-content:center" href="' + __hangrixEscape(__hangrixUrlWith({ mobile: '1', desktop: null, v: Date.now() })) + '">打开轻量版</a></div>' + debug + '</div>';
+  body.appendChild(panel);
+  const retry = document.getElementById('__hangrix_retry');
+  if (retry) retry.onclick = () => location.replace(__hangrixUrlWith({ v: Date.now() }));
 };
 const __hangrixMaybeRecover = (error) => {
   const details = String(error && (error.stack || error.message || error) || '').toLowerCase();
@@ -61,11 +68,15 @@ const __hangrixMaybeRecover = (error) => {
       !details.includes('unexpected token')) {
     return false;
   }
-  if (sessionStorage.getItem('__hangrix_chunk_retry') === '1') {
+  try {
+    if (sessionStorage.getItem('__hangrix_chunk_retry') === '1') {
+      return false;
+    }
+    sessionStorage.setItem('__hangrix_chunk_retry', '1');
+  } catch {
     return false;
   }
-  sessionStorage.setItem('__hangrix_chunk_retry', '1');
-  location.replace(location.pathname + location.search + (location.search ? '&' : '?') + 'v=' + Date.now());
+  location.replace(__hangrixUrlWith({ v: Date.now() }));
   return true;
 };
 window.addEventListener('pageshow', () => {
@@ -82,7 +93,7 @@ import(__hangrixEntry).catch((error) => {
   if (__hangrixMaybeRecover(error)) {
     return;
   }
-  __hangrixDiag('module-error', error);
+  __hangrixLoadFailure('module-error', error);
 });
 </script>`,
   )
